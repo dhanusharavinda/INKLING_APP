@@ -103,6 +103,17 @@ export const EMOTIONS: Record<EmotionKey, EmotionMeta> = {
     blush: false,
     tagline: 'politely unimpressed',
   },
+  anguish: {
+    key: 'anguish',
+    label: 'Anguish',
+    color: '#7E2B3C',
+    deep: '#4A1622',
+    soft: '#EFD9DE',
+    mouth: 'open',
+    brows: 'angry',
+    blush: false,
+    tagline: 'raw pain that wants out',
+  },
 };
 
 export const EMOTION_KEYS = Object.keys(EMOTIONS) as EmotionKey[];
@@ -121,6 +132,7 @@ export const HAWKINS: Record<EmotionKey, number> = {
   anger: 150,
   fear: 100,
   sadness: 75,
+  anguish: 30,
 };
 
 export interface ConsciousnessLevel {

@@ -6,7 +6,8 @@ export type EmotionKey =
   | 'calm'
   | 'love'
   | 'wonder'
-  | 'disgust';
+  | 'disgust'
+  | 'anguish';
 
 export interface PhilosopherMatch {
   name: string;

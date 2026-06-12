@@ -55,8 +55,9 @@ they can reread the entry and remember exactly how it felt to be them in that mo
 
 Respond ONLY with a JSON object with these exact keys:
 {
-  "emotion": one of ["joy","sadness","anger","fear","calm","love","wonder","disgust"], the dominant emotion,
+  "emotion": one of ["joy","sadness","anger","fear","calm","love","wonder","disgust","anguish"], the dominant emotion,
   "secondary": one of the same list or null, a quieter second emotion if present,
+  // Guidance: "sadness" covers grief, despair, depression, and hopeless or suicidal feelings ("I want to die", "what's the point"). "anguish" is for raw pain, agony, torment, betrayal, or wanting revenge. Never default unclear or neutral entries to "wonder"; use "calm" when unsure.
   "intensity": integer 0-100, how strongly the emotion is felt,
   "tone": short phrase (3-6 words) describing the voice of the entry, e.g. "quietly hopeful, a little tired",
   "mindset": 1-2 sentences capturing their current mindset and beliefs as expressed here. Write in second person ("You believe..."). Simple but philosophical.
@@ -146,13 +147,23 @@ export async function analyzeWithAI(
 
 const KEYWORDS: Record<EmotionKey, string[]> = {
   joy: ['happy', 'great', 'amazing', 'excited', 'fun', 'won', 'laugh', 'grateful', 'good day', 'proud'],
-  sadness: ['sad', 'miss', 'lost', 'cry', 'lonely', 'tired of', 'empty', 'gone', 'hurt', 'heavy'],
+  sadness: [
+    'sad', 'miss', 'lost', 'cry', 'lonely', 'tired of', 'empty', 'gone', 'heavy', 'depressed',
+    'depression', 'hopeless', 'worthless', 'no point', 'give up', 'gave up', 'wanna die',
+    'want to die', 'i wanna die', 'i want to die', 'kill myself', 'end it all', 'cant go on',
+    "can't go on", 'numb', 'broken inside',
+  ],
   anger: ['angry', 'furious', 'unfair', 'hate', 'annoyed', 'frustrated', 'mad', 'rage', 'sick of'],
   fear: ['afraid', 'scared', 'anxious', 'worried', 'nervous', 'what if', 'panic', 'uncertain', 'risk'],
   calm: ['calm', 'peace', 'quiet', 'slow', 'breathe', 'settled', 'okay with', 'accept', 'content'],
   love: ['love', 'family', 'friend', 'together', 'warm', 'care', 'home', 'heart', 'thankful for'],
   wonder: ['wonder', 'curious', 'why', 'realized', 'idea', 'maybe', 'perspective', 'changed my mind', 'learn'],
   disgust: ['disgust', 'gross', 'fake', 'cringe', 'cannot stand', "can't stand", 'shallow', 'pointless'],
+  anguish: [
+    'pain', 'agony', 'agonizing', 'revenge', 'avenge', 'make them pay', 'suffering', 'suffer',
+    'torment', 'tortured', 'unbearable', 'betrayed', 'betrayal', 'hurt so', 'hurts so', 'wound',
+    'wounded', 'ripped apart', 'wronged', 'they will pay',
+  ],
 };
 
 const PHILOSOPHERS: { match: string[]; p: PhilosopherMatch }[] = [
@@ -258,7 +269,7 @@ export function analyzeLocally(text: string): Analysis {
     score: KEYWORDS[k].reduce((acc, w) => acc + (lower.includes(w) ? 1 : 0), 0),
   })).sort((a, b) => b.score - a.score);
 
-  const top = scores[0].score > 0 ? scores[0].k : 'wonder';
+  const top = scores[0].score > 0 ? scores[0].k : 'calm';
   const second = scores[1].score > 0 ? scores[1].k : null;
   const exclaims = (text.match(/!/g) ?? []).length;
   const intensity = Math.max(
@@ -281,6 +292,7 @@ export function analyzeLocally(text: string): Analysis {
     love: 'warm at the center',
     wonder: 'curious, turning things over',
     disgust: 'dry and unimpressed',
+    anguish: 'raw and in pain',
   };
 
   return {
