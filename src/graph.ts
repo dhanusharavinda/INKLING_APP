@@ -1,34 +1,6 @@
 import { Entry, EmotionKey } from './types';
-import { EMOTIONS } from './emotions';
+import { EMOTIONS, EMOTION_KEYS } from './emotions';
 import { extractThemes } from './ai';
-import { palette } from './theme';
-
-export type NodeKind = 'emotion' | 'theme' | 'philosopher' | 'entry';
-
-export interface GraphNode {
-  id: string;
-  kind: NodeKind;
-  label: string;
-  color: string;
-  r: number; // radius
-  count: number; // how many entries touch this node
-  entryId?: string; // for entry nodes
-  school?: string; // for philosopher nodes
-}
-
-export interface GraphEdge {
-  a: string;
-  b: string;
-}
-
-export interface GraphData {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  adjacency: Map<string, Set<string>>;
-  truncated: number; // how many older entries were left out
-}
-
-export const MAX_GRAPH_ENTRIES = 30;
 
 export function themesOf(entry: Entry): string[] {
   const t = entry.analysis.themes;
@@ -36,76 +8,85 @@ export function themesOf(entry: Entry): string[] {
   return extractThemes(entry.text); // legacy entries saved before themes existed
 }
 
-// Build nodes and edges from journal entries:
-// every entry connects to its emotion, its themes, and its philosopher.
-export function buildGraph(entries: Entry[]): GraphData {
-  const recent = [...entries]
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, MAX_GRAPH_ENTRIES);
-  const truncated = entries.length - recent.length;
+// ---------- Topic graph (Obsidian-style co-occurrence network) ----------
 
-  const nodes = new Map<string, GraphNode>();
-  const edges: GraphEdge[] = [];
+export interface TopicNode {
+  id: string;
+  label: string;
+  count: number; // entries mentioning this topic; drives circle size
+  r: number;
+  color: string;
+  deep: string;
+  dominantEmotion: EmotionKey;
+}
 
-  const bump = (node: GraphNode) => {
-    const existing = nodes.get(node.id);
-    if (existing) existing.count += 1;
-    else nodes.set(node.id, node);
-  };
+export interface TopicEdge {
+  a: string;
+  b: string;
+  weight: number; // how many entries mention both topics
+}
 
-  for (const e of recent) {
-    const emotion: EmotionKey = e.analysis.emotion;
-    const meta = EMOTIONS[emotion];
-    const entryNodeId = `entry:${e.id}`;
-    nodes.set(entryNodeId, {
-      id: entryNodeId,
-      kind: 'entry',
-      label: new Date(e.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }),
-      color: meta.color,
-      r: 7,
-      count: 1,
-      entryId: e.id,
-    });
+export interface TopicGraph {
+  nodes: TopicNode[];
+  edges: TopicEdge[];
+  adjacency: Map<string, Set<string>>;
+  entriesByTopic: Map<string, Entry[]>;
+}
 
-    const emotionId = `emotion:${emotion}`;
-    bump({
-      id: emotionId,
-      kind: 'emotion',
-      label: meta.label,
-      color: meta.color,
-      r: 0,
-      count: 1,
-    });
-    edges.push({ a: entryNodeId, b: emotionId });
+export function topicRadius(count: number): number {
+  return Math.min(52, 16 + count * 5);
+}
 
-    for (const theme of themesOf(e).slice(0, 3)) {
-      const themeId = `theme:${theme}`;
-      bump({ id: themeId, kind: 'theme', label: theme, color: palette.accent, r: 0, count: 1 });
-      edges.push({ a: entryNodeId, b: themeId });
+export function buildTopicGraph(entries: Entry[]): TopicGraph {
+  const counts = new Map<string, number>();
+  const entriesByTopic = new Map<string, Entry[]>();
+  const emotionsByTopic = new Map<string, Map<EmotionKey, number>>();
+  const pairWeights = new Map<string, number>();
+
+  for (const e of entries) {
+    const topics = [...new Set(themesOf(e))];
+    for (const t of topics) {
+      counts.set(t, (counts.get(t) ?? 0) + 1);
+      entriesByTopic.set(t, [...(entriesByTopic.get(t) ?? []), e]);
+      const em = emotionsByTopic.get(t) ?? new Map<EmotionKey, number>();
+      em.set(e.analysis.emotion, (em.get(e.analysis.emotion) ?? 0) + 1);
+      emotionsByTopic.set(t, em);
     }
-
-    const phil = e.analysis.philosopher;
-    if (phil?.name) {
-      const philId = `phil:${phil.name}`;
-      bump({
-        id: philId,
-        kind: 'philosopher',
-        label: phil.name,
-        color: palette.gold,
-        r: 0,
-        count: 1,
-        school: phil.school,
-      });
-      edges.push({ a: entryNodeId, b: philId });
+    for (let i = 0; i < topics.length; i++) {
+      for (let j = i + 1; j < topics.length; j++) {
+        const key = [topics[i], topics[j]].sort().join('|');
+        pairWeights.set(key, (pairWeights.get(key) ?? 0) + 1);
+      }
     }
   }
 
-  // size hub nodes by how many entries they touch
-  for (const n of nodes.values()) {
-    if (n.kind === 'emotion') n.r = Math.min(26, 13 + n.count * 2.5);
-    if (n.kind === 'theme') n.r = Math.min(22, 10 + n.count * 2.5);
-    if (n.kind === 'philosopher') n.r = Math.min(22, 11 + n.count * 2);
-  }
+  const nodes: TopicNode[] = [...counts.entries()].map(([label, count]) => {
+    const em = emotionsByTopic.get(label)!;
+    let dominant: EmotionKey = 'calm';
+    let max = -1;
+    for (const k of EMOTION_KEYS) {
+      const c = em.get(k) ?? 0;
+      if (c > max) {
+        max = c;
+        dominant = k;
+      }
+    }
+    const meta = EMOTIONS[dominant];
+    return {
+      id: `topic:${label}`,
+      label,
+      count,
+      r: topicRadius(count),
+      color: meta.color,
+      deep: meta.deep,
+      dominantEmotion: dominant,
+    };
+  });
+
+  const edges: TopicEdge[] = [...pairWeights.entries()].map(([key, weight]) => {
+    const [a, b] = key.split('|');
+    return { a: `topic:${a}`, b: `topic:${b}`, weight };
+  });
 
   const adjacency = new Map<string, Set<string>>();
   for (const { a, b } of edges) {
@@ -115,17 +96,27 @@ export function buildGraph(entries: Entry[]): GraphData {
     adjacency.get(b)!.add(a);
   }
 
-  return { nodes: [...nodes.values()], edges, adjacency, truncated };
+  // entries newest first for the detail panel
+  for (const [k, list] of entriesByTopic) {
+    entriesByTopic.set(
+      k,
+      [...list].sort((x, y) => y.createdAt - x.createdAt)
+    );
+  }
+
+  return { nodes, edges, adjacency, entriesByTopic };
 }
+
+// ---------- Force-directed layout ----------
 
 export interface Point {
   x: number;
   y: number;
 }
 
-// Deterministic force-directed layout. Runs synchronously; node counts stay small.
-export function layoutGraph(
-  data: GraphData,
+export function layoutNodes(
+  nodes: { id: string; r: number }[],
+  edges: { a: string; b: string }[],
   width: number,
   height: number,
   seed: number
@@ -138,18 +129,12 @@ export function layoutGraph(
 
   const cx = width / 2;
   const cy = height / 2;
-  const R = Math.min(width, height) * 0.38;
-  const ringFor: Record<NodeKind, number> = {
-    emotion: 0.35,
-    theme: 0.6,
-    philosopher: 0.75,
-    entry: 0.95,
-  };
+  const R = Math.min(width, height) * 0.4;
 
   const pos: Record<string, Point & { vx: number; vy: number }> = {};
-  data.nodes.forEach((n, i) => {
+  nodes.forEach((n, i) => {
     const angle = rand() * Math.PI * 2 + i;
-    const radius = R * ringFor[n.kind] * (0.7 + rand() * 0.5);
+    const radius = R * (0.3 + rand() * 0.7);
     pos[n.id] = {
       x: cx + Math.cos(angle) * radius,
       y: cy + Math.sin(angle) * radius,
@@ -158,11 +143,10 @@ export function layoutGraph(
     };
   });
 
-  const ids = data.nodes.map((n) => n.id);
-  const restLength = 64;
+  const rById = new Map(nodes.map((n) => [n.id, n.r]));
+  const ids = nodes.map((n) => n.id);
 
-  for (let iter = 0; iter < 240; iter++) {
-    // pairwise repulsion
+  for (let iter = 0; iter < 260; iter++) {
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {
         const a = pos[ids[i]];
@@ -176,7 +160,9 @@ export function layoutGraph(
           d2 = 1;
         }
         const d = Math.sqrt(d2);
-        const f = Math.min(6, 1500 / d2);
+        // stronger repulsion between big circles so labels never collide
+        const minGap = (rById.get(ids[i])! + rById.get(ids[j])!) * 1.25 + 14;
+        const f = d < minGap ? Math.min(10, (minGap - d) * 0.3 + 2) : Math.min(5, 2200 / d2);
         const fx = (dx / d) * f;
         const fy = (dy / d) * f;
         a.vx += fx;
@@ -185,14 +171,14 @@ export function layoutGraph(
         b.vy -= fy;
       }
     }
-    // springs along edges
-    for (const { a: ia, b: ib } of data.edges) {
+    for (const { a: ia, b: ib } of edges) {
       const a = pos[ia];
       const b = pos[ib];
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const d = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-      const f = (d - restLength) * 0.025;
+      const rest = (rById.get(ia)! + rById.get(ib)!) * 1.4 + 34;
+      const f = (d - rest) * 0.02;
       const fx = (dx / d) * f;
       const fy = (dy / d) * f;
       a.vx += fx;
@@ -200,22 +186,21 @@ export function layoutGraph(
       b.vx -= fx;
       b.vy -= fy;
     }
-    // gentle pull toward center + integrate
     for (const id of ids) {
       const p = pos[id];
-      p.vx += (cx - p.x) * 0.012;
-      p.vy += (cy - p.y) * 0.012;
-      p.x += Math.max(-12, Math.min(12, p.vx));
-      p.y += Math.max(-12, Math.min(12, p.vy));
+      p.vx += (cx - p.x) * 0.01;
+      p.vy += (cy - p.y) * 0.01;
+      p.x += Math.max(-14, Math.min(14, p.vx));
+      p.y += Math.max(-14, Math.min(14, p.vy));
       p.vx *= 0.6;
       p.vy *= 0.6;
     }
   }
 
   const out: Record<string, Point> = {};
-  const pad = 26;
-  for (const n of data.nodes) {
+  for (const n of nodes) {
     const p = pos[n.id];
+    const pad = n.r + 8;
     out[n.id] = {
       x: Math.max(pad, Math.min(width - pad, p.x)),
       y: Math.max(pad, Math.min(height - pad, p.y)),

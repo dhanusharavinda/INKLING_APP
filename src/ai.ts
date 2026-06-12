@@ -5,6 +5,11 @@ import { EMOTION_KEYS } from './emotions';
 const API_BASE = 'https://api.openai.com/v1';
 const CHAT_MODEL = 'gpt-4o-mini';
 
+// The user never wants em dashes anywhere, including model output.
+export function stripEmDashes(s: string): string {
+  return s.replace(/\s*[—–]\s*/g, ', ');
+}
+
 // ---------- Whisper speech-to-text ----------
 
 export async function transcribeAudio(uri: string, apiKey: string): Promise<string> {
@@ -33,7 +38,7 @@ export async function transcribeAudio(uri: string, apiKey: string): Promise<stri
     throw new Error(`Whisper error ${r.status}: ${body.slice(0, 200)}`);
   }
   const json = (await r.json()) as { text?: string };
-  return (json.text ?? '').trim();
+  return stripEmDashes((json.text ?? '').trim());
 }
 
 // ---------- GPT analysis (+ optional tailoring) ----------
@@ -62,7 +67,8 @@ Respond ONLY with a JSON object with these exact keys:
   "themes": array of 1-3 short lowercase topic words this entry is about (e.g. ["money","career"], ["family"], ["change","fear"]). Reuse plain everyday words so themes can recur across entries,
   "tailoredText": ${'`'}null${'`'} unless asked to tailor (see user message). When tailoring: lightly clean the raw spoken transcript into a readable journal entry. Fix filler words and rambling, keep their voice, their phrases, their feelings. Never invent content. First person, same language they used.
 }
-Keep everything warm, minimal, and human. Never moralize.`;
+Keep everything warm, minimal, and human. Never moralize.
+Never use em dashes or en dashes anywhere in any field; use commas, periods, or colons instead.`;
 
 function isEmotionKey(v: unknown): v is EmotionKey {
   return typeof v === 'string' && (EMOTION_KEYS as string[]).includes(v);
@@ -107,18 +113,19 @@ export async function analyzeWithAI(
   }
 
   const phil = parsed.philosopher as PhilosopherMatch | null | undefined;
+  const clean = (v: unknown, fallback = '') => stripEmDashes(String(v ?? fallback));
   const analysis: Analysis = {
     emotion: isEmotionKey(parsed.emotion) ? parsed.emotion : 'calm',
     secondary: isEmotionKey(parsed.secondary) ? parsed.secondary : null,
     intensity: Math.max(0, Math.min(100, Number(parsed.intensity) || 50)),
-    tone: String(parsed.tone ?? 'quiet and steady'),
-    mindset: String(parsed.mindset ?? ''),
-    thinkingStyle: String(parsed.thinkingStyle ?? ''),
-    essence: String(parsed.essence ?? ''),
-    reflection: String(parsed.reflection ?? ''),
+    tone: clean(parsed.tone, 'quiet and steady'),
+    mindset: clean(parsed.mindset),
+    thinkingStyle: clean(parsed.thinkingStyle),
+    essence: clean(parsed.essence),
+    reflection: clean(parsed.reflection),
     philosopher:
       phil && typeof phil === 'object' && phil.name
-        ? { name: String(phil.name), school: String(phil.school ?? ''), why: String(phil.why ?? '') }
+        ? { name: clean(phil.name), school: clean(phil.school), why: clean(phil.why) }
         : null,
     themes: Array.isArray(parsed.themes)
       ? (parsed.themes as unknown[])
@@ -130,7 +137,7 @@ export async function analyzeWithAI(
   };
   const tailoredText =
     tailor && typeof parsed.tailoredText === 'string' && parsed.tailoredText.trim().length > 0
-      ? parsed.tailoredText.trim()
+      ? stripEmDashes(parsed.tailoredText.trim())
       : null;
   return { analysis, tailoredText };
 }

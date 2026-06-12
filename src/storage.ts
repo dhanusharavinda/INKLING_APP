@@ -21,12 +21,51 @@ async function readJson<T>(key: string, fallback: T): Promise<T> {
   }
 }
 
+const DASH_RE = /\s*[—–]\s*/g;
+
+// Entries saved by older builds (or by the AI before the no-dash rule) may
+// still contain em dashes. Scrub them once on load and persist the fix.
+function deDashEntry(e: Entry): Entry {
+  const fix = (s: string) => s.replace(DASH_RE, ', ');
+  const a = e.analysis;
+  const hasDash = (s?: string | null) => !!s && /[—–]/.test(s);
+  const dirty =
+    hasDash(e.text) ||
+    hasDash(e.rawTranscript) ||
+    hasDash(a.tone) ||
+    hasDash(a.mindset) ||
+    hasDash(a.thinkingStyle) ||
+    hasDash(a.essence) ||
+    hasDash(a.reflection) ||
+    hasDash(a.philosopher?.why);
+  if (!dirty) return e;
+  return {
+    ...e,
+    text: fix(e.text),
+    rawTranscript: e.rawTranscript ? fix(e.rawTranscript) : e.rawTranscript,
+    analysis: {
+      ...a,
+      tone: fix(a.tone),
+      mindset: fix(a.mindset),
+      thinkingStyle: fix(a.thinkingStyle),
+      essence: fix(a.essence),
+      reflection: fix(a.reflection),
+      philosopher: a.philosopher
+        ? { ...a.philosopher, why: fix(a.philosopher.why) }
+        : a.philosopher,
+    },
+  };
+}
+
 export async function loadEntries(): Promise<Entry[]> {
   try {
     const raw = await AsyncStorage.getItem(K_ENTRIES);
     if (!raw) return [];
     const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? (arr as Entry[]) : [];
+    if (!Array.isArray(arr)) return [];
+    const entries = (arr as Entry[]).map(deDashEntry);
+    if (JSON.stringify(entries) !== raw) await saveEntries(entries);
+    return entries;
   } catch {
     return [];
   }
