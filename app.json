@@ -1,17 +1,18 @@
 {
   "expo": {
-    "name": "PROJECT_AIJOURNAL",
-    "slug": "PROJECT_AIJOURNAL",
+    "name": "Inkling",
+    "slug": "inkling-ai-journal",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "backgroundColor": "#FBF7F0",
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#FBF7F0",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -20,6 +21,14 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Inkling uses your microphone so you can speak your journal entries."
+        }
+      ]
+    ]
   }
 }
