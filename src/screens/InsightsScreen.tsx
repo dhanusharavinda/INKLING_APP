@@ -7,13 +7,15 @@ import { BADGES, levelFor } from '../gamification';
 import EmotionAvatar from '../components/EmotionAvatar';
 import { Card, Chip, ProgressBar, SectionTitle } from '../components/ui';
 import { EmotionDistribution, MoodTimeline } from '../components/Charts';
+import KnowledgeGraph from '../components/KnowledgeGraph';
 
 interface Props {
   entries: Entry[];
   game: GameState;
+  onOpenEntry: (id: string) => void;
 }
 
-export default function InsightsScreen({ entries, game }: Props) {
+export default function InsightsScreen({ entries, game, onOpenEntry }: Props) {
   const sorted = [...entries].sort((a, b) => a.createdAt - b.createdAt);
   const earliest = sorted[0];
   const latest = sorted[sorted.length - 1];
@@ -38,6 +40,11 @@ export default function InsightsScreen({ entries, game }: Props) {
     <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
       <Text style={styles.title}>Insights</Text>
       <Text style={styles.subtitle}>How your inner weather has been moving.</Text>
+
+      <SectionTitle>Your mind, mapped</SectionTitle>
+      <Card style={{ padding: 12 }}>
+        <KnowledgeGraph entries={entries} onOpenEntry={onOpenEntry} />
+      </Card>
 
       <SectionTitle>Last 14 days</SectionTitle>
       <Card>

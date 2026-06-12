@@ -84,7 +84,7 @@ export default function SettingsScreen({
         </View>
         <View style={[styles.statusPill, settings.apiKey.trim() ? styles.statusOn : styles.statusOff]}>
           <Text style={styles.statusText}>
-            {settings.apiKey.trim() ? '● Connected — full AI mode' : '○ Demo mode — local analysis'}
+            {settings.apiKey.trim() ? '● Connected: full AI mode' : '○ Demo mode: local analysis'}
           </Text>
         </View>
       </Card>

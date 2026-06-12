@@ -85,21 +85,22 @@ export function buildSampleEntries(): Entry[] {
   return [
     sample(
       6,
-      "Years ago I used to say money doesn't matter, only passion does. Today I caught myself negotiating hard for a raise — and I didn't feel guilty. I think money buys calm, and calm is what lets me be kind.",
+      "Years ago I used to say money doesn't matter, only passion does. Today I caught myself negotiating hard for a raise, and I didn't feel guilty. I think money buys calm, and calm is what lets me be kind.",
       {
         emotion: 'wonder',
         secondary: 'calm',
         intensity: 62,
         tone: 'honest, mid-revision',
-        mindset: 'You believe your past self was not wrong, just earlier — money has become a tool for peace, not a scoreboard.',
+        mindset: 'You believe your past self was not wrong, just earlier. Money has become a tool for peace, not a scoreboard.',
         thinkingStyle: 'You are comparing your past and present selves without shaming either one.',
         essence: 'Money buys calm, and calm lets me be kind.',
-        reflection: 'A belief that updates with evidence is not a betrayal of who you were — it is proof you were paying attention.',
+        reflection: 'A belief that updates with evidence is not a betrayal of who you were. It is proof you were paying attention.',
         philosopher: {
           name: 'Seneca',
           school: 'Stoicism',
           why: 'A wealthy Stoic who argued money is fine to hold as long as it does not hold you.',
         },
+        themes: ['money', 'change'],
         source: 'local',
       }
     ),
@@ -111,7 +112,7 @@ export function buildSampleEntries(): Entry[] {
         secondary: 'anger',
         intensity: 74,
         tone: 'bruised, replaying the tape',
-        mindset: 'You believe effort deserves acknowledgment, and today the world disagreed — the sting is the gap between those two.',
+        mindset: 'You believe effort deserves acknowledgment, and today the world disagreed. The sting is the gap between those two.',
         thinkingStyle: 'You are looping on one moment, searching it for a verdict about yourself.',
         essence: "It shouldn't sting this much, but it does.",
         reflection: 'Let it sting tonight. The work was still real, even if the applause never arrived.',
@@ -120,6 +121,7 @@ export function buildSampleEntries(): Entry[] {
           school: 'Stoicism',
           why: 'He reminded himself daily that praise is out of his control; the quality of effort is not.',
         },
+        themes: ['work', 'recognition'],
         source: 'local',
       },
       'voice'
@@ -133,7 +135,7 @@ export function buildSampleEntries(): Entry[] {
         intensity: 48,
         tone: 'slow and settled',
         mindset: 'You believe quiet is something you make, not something you wait for.',
-        thinkingStyle: 'You are savoring instead of analyzing — letting an experience be enough.',
+        thinkingStyle: 'You are savoring instead of analyzing, letting an experience be enough.',
         essence: 'The city was loud but my head finally was not.',
         reflection: 'The long way home is rarely about the route.',
         philosopher: {
@@ -141,26 +143,28 @@ export function buildSampleEntries(): Entry[] {
           school: 'Epicureanism',
           why: 'Finding luxury in an ordinary evening walk is his entire philosophy in one act.',
         },
+        themes: ['quiet', 'walking'],
         source: 'local',
       }
     ),
     sample(
       2,
-      "What if the startup idea fails and I burn two years? But also — what if I'm 40 and still wondering? I keep flip-flopping. Maybe the fear is the signal that it matters.",
+      "What if the startup idea fails and I burn two years? But also, what if I'm 40 and still wondering? I keep flip-flopping. Maybe the fear is the signal that it matters.",
       {
         emotion: 'fear',
         secondary: 'wonder',
         intensity: 70,
         tone: 'restless, leaning forward',
-        mindset: 'You believe regret-from-inaction now scares you more than failure — that is a new development.',
+        mindset: 'You believe regret-from-inaction now scares you more than failure, and that is a new development.',
         thinkingStyle: 'You are running futures in both directions and noticing which one hurts more.',
         essence: 'Maybe the fear is the signal that it matters.',
         reflection: 'You are not flip-flopping; you are weighing two different versions of yourself. One of them is asking to exist.',
         philosopher: {
           name: 'Søren Kierkegaard',
           school: 'Existentialism',
-          why: 'He called this exact dizziness "the anxiety of freedom" — fear felt at the edge of a real choice.',
+          why: 'He called this exact dizziness "the anxiety of freedom": fear felt at the edge of a real choice.',
         },
+        themes: ['startup', 'change'],
         source: 'local',
       },
       'voice'
@@ -173,15 +177,16 @@ export function buildSampleEntries(): Entry[] {
         secondary: 'joy',
         intensity: 66,
         tone: 'warm, caught off guard',
-        mindset: 'You believe connection sneaks in through small doors — an hour about nothing was actually about everything.',
+        mindset: 'You believe connection sneaks in through small doors. An hour about nothing was actually about everything.',
         thinkingStyle: 'You are noticing needs only after they are met, and wondering what else you are missing.',
         essence: "I didn't know I needed that.",
-        reflection: 'Some calls are recipes too — instructions for a feeling you forgot how to make alone.',
+        reflection: 'Some calls are recipes too: instructions for a feeling you forgot how to make alone.',
         philosopher: {
           name: 'Confucius',
           school: 'Confucianism',
           why: 'He held that the deepest philosophy lives inside ordinary family rituals, like a recipe passed down.',
         },
+        themes: ['family', 'connection'],
         source: 'local',
       }
     ),

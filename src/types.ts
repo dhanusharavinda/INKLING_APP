@@ -24,6 +24,7 @@ export interface Analysis {
   essence: string; // one-line philosophical essence
   reflection: string; // short, gentle philosophical reflection
   philosopher?: PhilosopherMatch | null;
+  themes?: string[]; // 1-3 short lowercase topics, e.g. ["money", "career"]
   source: 'ai' | 'local';
 }
 

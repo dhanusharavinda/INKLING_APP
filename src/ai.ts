@@ -45,21 +45,22 @@ export interface AnalyzeResult {
 
 const SYSTEM_PROMPT = `You are the quiet, philosophical heart of a personal journal app called Inkling.
 The user speaks or writes raw journal notes. Your job is to capture not just WHAT they said,
-but HOW they were — their tone, current mindset, and way of thinking — so that years later
+but HOW they were (their tone, current mindset, and way of thinking) so that years later
 they can reread the entry and remember exactly how it felt to be them in that moment.
 
 Respond ONLY with a JSON object with these exact keys:
 {
-  "emotion": one of ["joy","sadness","anger","fear","calm","love","wonder","disgust"] — the dominant emotion,
-  "secondary": one of the same list or null — a quieter second emotion if present,
-  "intensity": integer 0-100 — how strongly the emotion is felt,
+  "emotion": one of ["joy","sadness","anger","fear","calm","love","wonder","disgust"], the dominant emotion,
+  "secondary": one of the same list or null, a quieter second emotion if present,
+  "intensity": integer 0-100, how strongly the emotion is felt,
   "tone": short phrase (3-6 words) describing the voice of the entry, e.g. "quietly hopeful, a little tired",
   "mindset": 1-2 sentences capturing their current mindset and beliefs as expressed here. Write in second person ("You believe..."). Simple but philosophical.
   "thinkingStyle": 1 sentence on HOW they are thinking (e.g. comparing past and present self, weighing trade-offs, catastrophizing, savoring). Second person.
   "essence": ONE short line distilling the entry's core thought, like a tiny aphorism in their own spirit,
   "reflection": 1-2 gentle, simple-but-philosophical sentences a kind friend might say back. No advice-dumping, no clichés.
-  "philosopher": { "name": string, "school": string, "why": 1 sentence on why their thought pattern in THIS entry resembles that philosopher } — pick honestly from any tradition (Stoics, Epicurus, Socrates, Laozi, Buddha, Kierkegaard, Camus, Simone Weil, Nietzsche, etc.),
-  "tailoredText": ${'`'}null${'`'} unless asked to tailor (see user message). When tailoring: lightly clean the raw spoken transcript into a readable journal entry — fix filler words and rambling, keep their voice, their phrases, their feelings. Never invent content. First person, same language they used.
+  "philosopher": { "name": string, "school": string, "why": 1 sentence on why their thought pattern in THIS entry resembles that philosopher }. Pick honestly from any tradition (Stoics, Epicurus, Socrates, Laozi, Buddha, Kierkegaard, Camus, Simone Weil, Nietzsche, etc.),
+  "themes": array of 1-3 short lowercase topic words this entry is about (e.g. ["money","career"], ["family"], ["change","fear"]). Reuse plain everyday words so themes can recur across entries,
+  "tailoredText": ${'`'}null${'`'} unless asked to tailor (see user message). When tailoring: lightly clean the raw spoken transcript into a readable journal entry. Fix filler words and rambling, keep their voice, their phrases, their feelings. Never invent content. First person, same language they used.
 }
 Keep everything warm, minimal, and human. Never moralize.`;
 
@@ -119,6 +120,12 @@ export async function analyzeWithAI(
       phil && typeof phil === 'object' && phil.name
         ? { name: String(phil.name), school: String(phil.school ?? ''), why: String(phil.why ?? '') }
         : null,
+    themes: Array.isArray(parsed.themes)
+      ? (parsed.themes as unknown[])
+          .map((t) => String(t).toLowerCase().trim())
+          .filter((t) => t.length > 1 && t.length < 24)
+          .slice(0, 3)
+      : undefined,
     source: 'ai',
   };
   const tailoredText =
@@ -144,36 +151,97 @@ const KEYWORDS: Record<EmotionKey, string[]> = {
 const PHILOSOPHERS: { match: string[]; p: PhilosopherMatch }[] = [
   {
     match: ['money', 'work', 'career', 'success', 'ambition', 'wealth'],
-    p: { name: 'Seneca', school: 'Stoicism', why: 'You are weighing what wealth is actually for — Seneca wrote letters about exactly this.' },
+    p: { name: 'Seneca', school: 'Stoicism', why: 'You are weighing what wealth is actually for. Seneca wrote letters about exactly this.' },
   },
   {
     match: ['change', 'changed', 'used to', 'before', 'now i', 'different person', 'growing'],
-    p: { name: 'Heraclitus', school: 'Pre-Socratic', why: 'You notice that you are not the same person stepping into the same river — pure Heraclitus.' },
+    p: { name: 'Heraclitus', school: 'Pre-Socratic', why: 'You notice that you are not the same person stepping into the same river, which is pure Heraclitus.' },
   },
   {
     match: ['simple', 'enough', 'small things', 'tea', 'walk', 'sunset', 'little'],
-    p: { name: 'Epicurus', school: 'Epicureanism', why: 'You find richness in simple pleasures — Epicurus built a whole garden on that idea.' },
+    p: { name: 'Epicurus', school: 'Epicureanism', why: 'You find richness in simple pleasures. Epicurus built a whole garden on that idea.' },
   },
   {
     match: ['should i', 'why do', 'question', 'really true', 'do i actually'],
-    p: { name: 'Socrates', school: 'Classical Greek', why: 'You are examining your own beliefs instead of accepting them — the Socratic move.' },
+    p: { name: 'Socrates', school: 'Classical Greek', why: 'You are examining your own beliefs instead of accepting them, the classic Socratic move.' },
   },
   {
     match: ['flow', 'let go', 'nature', 'force', 'effortless', 'accept'],
-    p: { name: 'Laozi', school: 'Taoism', why: 'You lean toward flowing with events rather than forcing them — very Tao Te Ching.' },
+    p: { name: 'Laozi', school: 'Taoism', why: 'You lean toward flowing with events rather than forcing them, very Tao Te Ching.' },
   },
   {
     match: ['meaning', 'absurd', 'pointless but', 'keep going', 'anyway'],
-    p: { name: 'Albert Camus', school: 'Absurdism', why: 'You choose to keep going without a guaranteed meaning — Camus would call that rebellion.' },
+    p: { name: 'Albert Camus', school: 'Absurdism', why: 'You choose to keep going without a guaranteed meaning. Camus would call that rebellion.' },
   },
   {
     match: ['discipline', 'control', 'duty', 'morning', 'routine', 'responsibility'],
-    p: { name: 'Marcus Aurelius', school: 'Stoicism', why: 'You focus on what is in your control and your duty to it — straight from the Meditations.' },
+    p: { name: 'Marcus Aurelius', school: 'Stoicism', why: 'You focus on what is in your control and your duty to it, straight from the Meditations.' },
   },
 ];
 
 function pick<T>(arr: T[], seed: number): T {
   return arr[seed % arr.length];
+}
+
+const STOPWORDS = new Set(
+  'the a an and or but if then than that this those these i me my we our you your he she it they them his her its is are was were be been being have has had do does did will would could should can may might just really very also about into over under again more most some such no nor not only own same so too with without for from of to in on at by as what when where why how all any both each few other which who whom today yesterday tomorrow now still keep kept like dont didnt cant wont im ive id youre theyre weve thats going go got get make made feel felt feeling think thought know knew want wanted day days time didn wasn doesn couldn wouldn shouldn isn aren hasn hadn weren even much finally maybe little thing things people because while after before never always'.split(
+    ' '
+  )
+);
+
+// Canonical topics. Recognizing these keeps theme nodes clean and recurring,
+// so the mind graph clusters instead of filling with one-off words.
+const TOPIC_ALIASES: Record<string, string> = {
+  money: 'money', wealth: 'money', salary: 'money', raise: 'money', rich: 'money',
+  work: 'work', job: 'work', career: 'work', project: 'work', meeting: 'work',
+  office: 'work', boss: 'work', startup: 'startup', business: 'startup', company: 'startup',
+  family: 'family', mom: 'family', dad: 'family', mother: 'family', father: 'family',
+  parents: 'family', sister: 'family', brother: 'family',
+  friend: 'friends', friends: 'friends', friendship: 'friends',
+  relationship: 'relationships', partner: 'relationships', marriage: 'relationships',
+  health: 'health', sleep: 'health', tired: 'health', gym: 'health', body: 'health',
+  change: 'change', changing: 'change', changed: 'change', growing: 'change', growth: 'change',
+  future: 'future', past: 'past', childhood: 'past', memory: 'past', memories: 'past',
+  home: 'home', city: 'city', nature: 'nature', walk: 'walking', walked: 'walking',
+  school: 'study', study: 'study', college: 'study', learning: 'study',
+  travel: 'travel', music: 'music', books: 'books', reading: 'books', food: 'food',
+  meaning: 'meaning', purpose: 'meaning', success: 'success', failure: 'failure',
+  habit: 'habits', habits: 'habits', goal: 'goals', goals: 'goals',
+  belief: 'beliefs', beliefs: 'beliefs', opinion: 'beliefs', opinions: 'beliefs',
+  mind: 'thinking', thinking: 'thinking', quiet: 'quiet', alone: 'solitude',
+  connection: 'connection', together: 'connection', god: 'faith', faith: 'faith',
+  death: 'mortality', dream: 'dreams', dreams: 'dreams',
+};
+
+// Extract up to 3 topics from raw text (demo mode and legacy entries).
+export function extractThemes(text: string): string[] {
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z\s']/g, ' ')
+    .split(/\s+/)
+    .map((w) => w.replace(/'.*$/, ''))
+    .filter(Boolean);
+
+  // pass 1: known topics, canonicalized
+  const found: string[] = [];
+  for (const w of words) {
+    const topic = TOPIC_ALIASES[w];
+    if (topic && !found.includes(topic) && !(EMOTION_KEYS as string[]).includes(topic)) {
+      found.push(topic);
+      if (found.length === 3) break;
+    }
+  }
+  if (found.length > 0) return found;
+
+  // pass 2: most frequent meaningful words
+  const counts = new Map<string, number>();
+  words
+    .filter((w) => w.length > 3 && !STOPWORDS.has(w))
+    .forEach((w) => counts.set(w, (counts.get(w) ?? 0) + 1));
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 2)
+    .map(([w]) => w);
 }
 
 export function analyzeLocally(text: string): Analysis {
@@ -213,11 +281,12 @@ export function analyzeLocally(text: string): Analysis {
     secondary: second,
     intensity,
     tone: toneByEmotion[top],
-    mindset: `You are working something out by putting it into words — right now "${firstSentence.trim()}" is the thought taking up the most room.`,
+    mindset: `You are working something out by putting it into words. Right now "${firstSentence.trim()}" is the thought taking up the most room.`,
     thinkingStyle: 'You are thinking by comparing how things feel now against how you expected them to feel.',
     essence: firstSentence.trim(),
-    reflection: 'A thought written down is a thought you can return to — most people lose theirs to the wind.',
+    reflection: 'A thought written down is a thought you can return to. Most people lose theirs to the wind.',
     philosopher,
+    themes: extractThemes(text),
     source: 'local',
   };
 }

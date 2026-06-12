@@ -83,7 +83,7 @@ export default function HomeScreen({ entries, game, settings, onOpenEntry, onCom
         <Card style={{ marginTop: 14, alignItems: 'center', paddingVertical: 28 }}>
           <EmotionAvatar emotion="wonder" size={84} animated />
           <Text style={[styles.latestEssence, { textAlign: 'center', marginTop: 12 }]}>
-            “Nothing here yet — and that is a kind of beginning.”
+            “Nothing here yet, and that is a kind of beginning.”
           </Text>
           <Pressable onPress={onCompose} style={styles.emptyCta}>
             <Text style={styles.emptyCtaText}>Write your first inkling</Text>

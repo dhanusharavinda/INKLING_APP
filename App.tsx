@@ -170,7 +170,9 @@ export default function App() {
               onCancel={() => setTab('home')}
             />
           )}
-          {tab === 'insights' && <InsightsScreen entries={entries} game={game} />}
+          {tab === 'insights' && (
+            <InsightsScreen entries={entries} game={game} onOpenEntry={setDetailId} />
+          )}
           {tab === 'settings' && (
             <SettingsScreen
               settings={settings}

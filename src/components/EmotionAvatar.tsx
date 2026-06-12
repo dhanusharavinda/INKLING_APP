@@ -62,7 +62,7 @@ export default function EmotionAvatar({ emotion, size = 72, animated = false }: 
         transform: [{ translateY }],
       }}
     >
-      {/* blob body — asymmetric radii make it look hand-drawn */}
+      {/* blob body: asymmetric radii make it look hand-drawn */}
       <View
         style={{
           width: s * 0.94,

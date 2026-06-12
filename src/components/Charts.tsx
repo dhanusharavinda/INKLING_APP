@@ -18,7 +18,7 @@ export function EmotionDistribution({ entries }: { entries: Entry[] }) {
   const ranked = EMOTION_KEYS.filter((k) => counts[k] > 0).sort((a, b) => counts[b] - counts[a]);
 
   if (ranked.length === 0) {
-    return <Text style={styles.empty}>No emotions captured yet — write your first entry.</Text>;
+    return <Text style={styles.empty}>No emotions captured yet. Write your first entry.</Text>;
   }
 
   return (
@@ -50,7 +50,7 @@ export function EmotionDistribution({ entries }: { entries: Entry[] }) {
   );
 }
 
-// 14-day strip — one dot per day, colored by that day's dominant emotion.
+// 14-day strip: one dot per day, colored by that day's dominant emotion.
 export function MoodTimeline({ entries }: { entries: Entry[] }) {
   const byDay = new Map<string, Entry[]>();
   entries.forEach((e) => {

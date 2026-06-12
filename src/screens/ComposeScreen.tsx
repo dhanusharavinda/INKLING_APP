@@ -91,7 +91,7 @@ export default function ComposeScreen({ settings, onToggleAutoTailor, onSave, on
       }
       if (!hasKey) {
         setError(
-          'Voice notes need an OpenAI key for Whisper transcription — add one in Settings, or type your note below.'
+          'Voice notes need an OpenAI key for Whisper transcription. Add one in Settings, or type your note below.'
         );
         return;
       }
@@ -167,7 +167,7 @@ export default function ComposeScreen({ settings, onToggleAutoTailor, onSave, on
           <View style={{ width: 24 }} />
         </View>
 
-        <Text style={styles.prompt}>What's on your mind — and how does it sit with you?</Text>
+        <Text style={styles.prompt}>What's on your mind, and how does it sit with you?</Text>
 
         {/* mode toggle */}
         <View style={styles.modeRow}>
@@ -204,7 +204,7 @@ export default function ComposeScreen({ settings, onToggleAutoTailor, onSave, on
               <View style={{ flex: 1 }}>
                 <Text style={styles.tailorTitle}>Auto-tailor with AI</Text>
                 <Text style={styles.tailorDesc}>
-                  Tidies your spoken words into a clean note — keeps your voice, drops the “um”s.
+                  Tidies your spoken words into a clean note. Keeps your voice, drops the “um”s.
                 </Text>
               </View>
               <Switch
@@ -227,7 +227,7 @@ export default function ComposeScreen({ settings, onToggleAutoTailor, onSave, on
           multiline
           placeholder={
             mode === 'voice'
-              ? 'Your transcript will appear here — you can edit it before saving.'
+              ? 'Your transcript will appear here. You can edit it before saving.'
               : 'Dear future me, today I…'
           }
           placeholderTextColor={palette.inkFaint}
@@ -255,7 +255,7 @@ export default function ComposeScreen({ settings, onToggleAutoTailor, onSave, on
 
         {!hasKey && (
           <Text style={styles.demoFootnote}>
-            No API key yet — Inkling will read the feeling locally (demo). The full AI is deeper.
+            No API key yet, so Inkling will read the feeling locally (demo). The full AI is deeper.
           </Text>
         )}
         <View style={{ height: 60 }} />

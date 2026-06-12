@@ -8,9 +8,11 @@
     "userInterfaceStyle": "light",
     "backgroundColor": "#FBF7F0",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dhanusharavind.inkling"
     },
     "android": {
+      "package": "com.dhanusharavind.inkling",
       "adaptiveIcon": {
         "backgroundColor": "#FBF7F0",
         "foregroundImage": "./assets/android-icon-foreground.png",
