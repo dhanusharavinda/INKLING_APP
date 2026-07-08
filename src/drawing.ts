@@ -46,6 +46,9 @@ const clampNum = (n: unknown, min: number, max: number, fallback: number) =>
 export function itemsToSvg(items: CanvasItem[], background = '#FFF7FA'): string {
   const body = items
     .map((it) => {
+      if (it.kind === 'fill') {
+        return `<rect width="${DRAW_SPACE}" height="${DRAW_SPACE}" rx="8" fill="${safeColor(it.color, '#FFF7FA')}"/>`;
+      }
       if (it.kind === 'text') {
         const x = clampNum(it.x, 0, DRAW_SPACE, 50);
         const y = clampNum(it.y, 0, DRAW_SPACE, 50);

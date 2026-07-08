@@ -400,6 +400,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
     commitItem({ ...s, kind: 'stroke', id: makeId(), author: userId });
   const handleText = (t: Omit<CanvasText, 'id' | 'author'>) =>
     commitItem({ ...t, id: makeId(), author: userId });
+  const handleFill = (color: string) =>
+    commitItem({ kind: 'fill', id: makeId(), author: userId, color });
 
   async function handleUndo() {
     const mine = [...items].reverse().find((s) => s.author === userId);
@@ -573,13 +575,35 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
 
   const mySymbol: 'X' | 'O' = iAmA ? 'X' : 'O';
   const xoGlyph = (c: string) => (c === 'X' ? '💗' : c === 'O' ? '⭐' : '');
+  const [xoHint, setXoHint] = useState<string | null>(null);
+  const xoHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showXoHint = (msg: string) => {
+    setXoHint(msg);
+    if (xoHintTimer.current) clearTimeout(xoHintTimer.current);
+    xoHintTimer.current = setTimeout(() => setXoHint(null), 2500);
+  };
+  useEffect(() => () => {
+    if (xoHintTimer.current) clearTimeout(xoHintTimer.current);
+  }, []);
 
   async function handleXoCell(i: number) {
     if (!pair || xoBusy) return;
     const board = xo?.board ?? '.........';
     const winner = xo?.winner ?? '';
     const turn = xo?.nextTurn ?? 'X';
-    if (winner || board[i] !== '.' || turn !== mySymbol) return;
+    // a rejected tap always says why, so it never feels broken
+    if (winner) {
+      showXoHint('this round is over, start a new one below ♡');
+      return;
+    }
+    if (board[i] !== '.') {
+      showXoHint('that spot is taken 😌');
+      return;
+    }
+    if (turn !== mySymbol) {
+      showXoHint(`patience ♡ it's ${partnerName}'s turn ${iAmA ? '⭐' : '💗'}`);
+      return;
+    }
     setXoBusy(true);
     try {
       const next = await xoMove(i + 1);
@@ -869,6 +893,7 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
                   items={items}
                   onStroke={handleStroke}
                   onText={handleText}
+                  onFill={handleFill}
                   onUndo={handleUndo}
                   onClear={handleClear}
                   canUndo={items.some((s) => s.author === userId)}
@@ -1034,6 +1059,13 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
                     ? `your turn ${iAmA ? '💗' : '⭐'}`
                     : `${partnerName}'s turn…`}
                 </Text>
+                {xoHint && <Text style={styles.xoHint}>{xoHint}</Text>}
+                {(xo?.board ?? '.........') === '.........' && !xo?.winner && (
+                  <Text style={styles.gameHint}>
+                    💗 plays first · you are {mySymbol === 'X' ? '💗' : '⭐'}, {partnerName} is{' '}
+                    {mySymbol === 'X' ? '⭐' : '💗'}
+                  </Text>
+                )}
                 {!!xo?.winner && (
                   <View style={{ alignSelf: 'stretch', marginTop: 12 }}>
                     <Button
@@ -1317,6 +1349,7 @@ const styles = StyleSheet.create({
   },
   answerReactBtnActive: { borderColor: '#F2789F' },
   xoScore: { fontSize: 13, fontWeight: '800', color: palette.inkSoft },
+  xoHint: { fontSize: 12.5, fontWeight: '700', color: '#D6336C', marginTop: 6 },
   xoBoard: {
     flexDirection: 'row',
     flexWrap: 'wrap',

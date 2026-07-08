@@ -294,6 +294,14 @@ const clampNum = (n: unknown, min: number, max: number, fallback: number) =>
 
 function rowToCanvasItem(r: any): CanvasItem {
   const s = (r.stroke ?? {}) as Record<string, unknown>;
+  if (s.kind === 'fill') {
+    return {
+      kind: 'fill',
+      id: r.id,
+      author: r.author,
+      color: typeof s.color === 'string' ? s.color : '#FFF7FA',
+    };
+  }
   if (s.kind === 'text') {
     // Partner rows are untrusted: clamp geometry and cap length on ingestion
     // so the live canvas and the widget render the same, sane thing.
@@ -379,6 +387,8 @@ export async function addCanvasItem(pairId: string, item: CanvasItem): Promise<v
   const payload =
     item.kind === 'text'
       ? { kind: 'text', text: item.text, x: item.x, y: item.y, size: item.size, color: item.color }
+      : item.kind === 'fill'
+      ? { kind: 'fill', color: item.color }
       : { color: item.color, width: item.width, points: item.points };
   const { error } = await supabase.from('canvas_strokes').insert({
     id: item.id,

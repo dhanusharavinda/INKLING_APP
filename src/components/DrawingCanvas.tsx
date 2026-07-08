@@ -35,6 +35,7 @@ interface Props {
   items: CanvasItem[]; // everything on the shared board (both people)
   onStroke: (s: Stroke) => void; // a finished line of mine
   onText: (t: Draft) => void; // a placed text/emoji sticker of mine
+  onFill: (color: string) => void; // paint-bucket: flood the page with a color
   onUndo: () => void; // remove my latest item
   onClear: () => void; // wipe the board (parent confirms)
   canUndo: boolean;
@@ -46,6 +47,7 @@ export default function DrawingCanvas({
   items,
   onStroke,
   onText,
+  onFill,
   onUndo,
   onClear,
   canUndo,
@@ -66,6 +68,9 @@ export default function DrawingCanvas({
   const [textColor, setTextColor] = useState(PENS[0]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const pinchRef = useRef<{ d0: number; size0: number } | null>(null);
+  // once a gesture has pinched, single-finger moves are ignored until release,
+  // so lifting one finger cannot yank the sticker across the page
+  const pinchedRef = useRef(false);
 
   const sizeRef = useRef(size);
   sizeRef.current = size;
@@ -100,6 +105,7 @@ export default function DrawingCanvas({
       onMoveShouldSetPanResponder: () => !disabledRef.current,
       onPanResponderGrant: (evt) => {
         pinchRef.current = null;
+        pinchedRef.current = false;
         const { pageX, pageY, locationX, locationY } = evt.nativeEvent;
         originRef.current = { x: pageX - locationX, y: pageY - locationY };
         const p = toSpace(pageX, pageY);
@@ -119,6 +125,7 @@ export default function DrawingCanvas({
         const touches = evt.nativeEvent.touches ?? [];
         // two fingers on a draft sticker: pinch to resize it
         if (draftRef.current && touches.length >= 2) {
+          pinchedRef.current = true;
           const [t1, t2] = touches;
           const d = Math.hypot(t2.pageX - t1.pageX, t2.pageY - t1.pageY);
           if (!pinchRef.current) {
@@ -131,6 +138,7 @@ export default function DrawingCanvas({
           return;
         }
         pinchRef.current = null;
+        if (pinchedRef.current) return; // pinch ended; wait for a fresh touch
         const { pageX, pageY } = evt.nativeEvent;
         const p = toSpace(pageX, pageY);
         if (draftRef.current) {
@@ -187,7 +195,9 @@ export default function DrawingCanvas({
         <Svg width={size} height={size} viewBox={`0 0 ${DRAW_SPACE} ${DRAW_SPACE}`}>
           <Rect width={DRAW_SPACE} height={DRAW_SPACE} fill={CANVAS_BG} rx={4} />
           {rendered.map((it, i) =>
-            it.kind === 'text' ? (
+            it.kind === 'fill' ? (
+              <Rect key={it.id || i} width={DRAW_SPACE} height={DRAW_SPACE} fill={it.color} rx={4} />
+            ) : it.kind === 'text' ? (
               <SvgText
                 key={it.id || i}
                 x={it.x}
@@ -281,6 +291,13 @@ export default function DrawingCanvas({
           hitSlop={4}
         >
           <Text style={{ fontSize: 12, fontWeight: '900', color: palette.ink }}>T😊</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => onFill(eraser ? CANVAS_BG : pen)}
+          style={styles.toolBtn}
+          hitSlop={4}
+        >
+          <Text style={{ fontSize: 13 }}>🪣</Text>
         </Pressable>
       </View>
 

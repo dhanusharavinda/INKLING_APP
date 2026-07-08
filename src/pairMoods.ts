@@ -57,22 +57,38 @@ const CHILL = R('chill', '🧊', 'chill', 'chilling together');
 const POKE = R('poke', '👉', 'poke', 'poking each other');
 const CHOCO = R('choco', '🍫', 'send chocolate', 'sharing chocolate');
 const CANDLE = R('candle', '🕯️', 'stay close', 'staying close');
+// comfort + reassurance, for the heavy days
+const OKAY = R('okay', '🌈', 'everything will be okay', 'weathering it together');
+const HERE = R('here', '🤍', "I'm here, tell me everything", 'talking it through');
+const PROUD = R('proud', '🏅', 'so proud of you', 'celebrating each other');
+const BREATHE = R('breathe', '🌬️', 'breathe with me', 'breathing together');
+const SAFE = R('safe', '🏡', "you're safe with me", 'safe together');
+const BLANKET = R('blanket', '🧸', 'blanket fort time', 'in a blanket fort');
+const FLOWERS = R('flowers', '💐', 'send flowers', 'smelling the flowers');
+const KISS = R('kiss', '😚', 'blow a kiss', 'blowing kisses');
+const DANCE = R('dance', '🪩', 'dance it out', 'dancing it out');
+const SNACK = R('snack', '🍜', 'bring snacks', 'sharing snacks');
 
 const REACTIONS_BY_MOOD: Record<string, ReactionDef[]> = {
-  love: [HOLD, SPARKLE, HUG],
-  joy: [R('cherish', '🎉', 'cherish together', 'cherishing together'), SPARKLE, POKE],
-  calm: [TEA, SPARKLE, POKE],
-  tired: [R('tuck', '🛏️', 'tuck them in', 'tucked in together'), TEA, HUG],
-  mishing: [R('mishback', '🥺', 'mish you too', 'mishing each other'), HUG, HOLD],
-  cuteagg: [R('squish', '🤗', 'squish them back', 'squishing each other'), R('fight', '🥊', 'play fight', 'play fighting'), POKE],
-  sadness: [HUG, CHOCO, CHILL],
-  anger: [CHILL, HUG, TEA],
-  wonder: [R('stars', '🔭', 'wonder along', 'stargazing together'), SPARKLE, POKE],
-  fear: [HUG, CANDLE, CHILL],
-  peace: [R('dove', '🕊️', 'breathe together', 'breathing together'), SPARKLE, TEA],
-  anguish: [HUG, CANDLE, CHOCO],
-  confusion: [R('compass', '🧭', 'figure it out together', 'figuring it out together'), HUG, TEA],
-  disgust: [CHILL, TEA, POKE],
+  love: [HOLD, KISS, SPARKLE, HUG, FLOWERS],
+  joy: [R('cherish', '🎉', 'cherish together', 'cherishing together'), DANCE, PROUD, SPARKLE, POKE],
+  calm: [TEA, BREATHE, SPARKLE, FLOWERS, POKE],
+  tired: [R('tuck', '🛏️', 'tuck them in', 'tucked in together'), BLANKET, TEA, SNACK, HUG],
+  mishing: [R('mishback', '🥺', 'mish you too', 'mishing each other'), KISS, HUG, HOLD, CANDLE],
+  cuteagg: [
+    R('squish', '🤗', 'squish them back', 'squishing each other'),
+    R('fight', '🥊', 'play fight', 'play fighting'),
+    R('bite', '🍪', 'offer a cookie instead', 'sharing cookies'),
+    POKE,
+  ],
+  sadness: [HUG, OKAY, HERE, CHOCO, BLANKET],
+  anger: [CHILL, HERE, TEA, BREATHE, HUG],
+  wonder: [R('stars', '🔭', 'wonder along', 'stargazing together'), SPARKLE, DANCE, POKE],
+  fear: [SAFE, HUG, OKAY, CANDLE, BREATHE],
+  peace: [R('dove', '🕊️', 'breathe together', 'breathing together'), SPARKLE, TEA, FLOWERS],
+  anguish: [HUG, HERE, OKAY, CANDLE, CHOCO],
+  confusion: [R('compass', '🧭', 'figure it out together', 'figuring it out together'), HERE, HUG, TEA],
+  disgust: [CHILL, TEA, SNACK, POKE],
 };
 
 const ALL_REACTIONS: ReactionDef[] = Object.values(REACTIONS_BY_MOOD).flat();

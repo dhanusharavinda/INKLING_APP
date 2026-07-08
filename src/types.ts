@@ -87,7 +87,16 @@ export interface CanvasText {
   color: string;
 }
 
-export type CanvasItem = CanvasStroke | CanvasText;
+// A paint-bucket layer: floods the whole page with a color at its z-order
+// (everything drawn before it is covered; everything after sits on top).
+export interface CanvasFill {
+  kind: 'fill';
+  id: string;
+  author: string;
+  color: string;
+}
+
+export type CanvasItem = CanvasStroke | CanvasText | CanvasFill;
 
 // A mood ("I'm feeling joy"), a comfort reaction, or a shared link.
 export interface PairEvent {
