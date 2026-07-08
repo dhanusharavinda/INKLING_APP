@@ -1,0 +1,10 @@
+# Netlify auto-deploy: builds the Inkling web app from source on every push.
+# Requires two environment variables in Site settings -> Environment variables:
+#   EXPO_PUBLIC_SUPABASE_URL       = https://<project>.supabase.co
+#   EXPO_PUBLIC_SUPABASE_ANON_KEY  = <anon public key>
+[build]
+  command = "npx expo export --platform web && node scripts/inject-web.js"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
