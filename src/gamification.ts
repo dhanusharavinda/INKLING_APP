@@ -4,6 +4,9 @@ import { EMOTION_KEYS } from './emotions';
 export const XP_PER_ENTRY = 25;
 export const XP_VOICE_BONUS = 10;
 
+// A gentle anti-spam cap: how many entries one account may create per day.
+export const DAILY_ENTRY_LIMIT = 6;
+
 export const LEVELS = [
   { xp: 0, title: 'Wanderer' },
   { xp: 75, title: 'Noticer' },
@@ -50,10 +53,18 @@ export const BADGES: BadgeDef[] = [
   { id: 'spoken-soul', emoji: '🎙️', title: 'Spoken Soul', desc: 'Journaled with your voice' },
   { id: 'seedling', emoji: '🌱', title: 'Habit Seedling', desc: '3-day streak' },
   { id: 'week-of-wondering', emoji: '🌖', title: 'Week of Wondering', desc: '7-day streak' },
+  { id: 'fortnight', emoji: '📅', title: 'Fortnight', desc: '14-day streak' },
   { id: 'moon-cycle', emoji: '🌕', title: 'Moon Cycle', desc: '30-day streak' },
+  { id: 'season-cycle', emoji: '🍂', title: 'Season Cycle', desc: '90-day streak' },
   { id: 'ten-thoughts', emoji: '📚', title: 'Ten Thoughts', desc: '10 entries written' },
-  { id: 'full-spectrum', emoji: '🌈', title: 'Full Spectrum', desc: 'Felt all 8 emotions' },
+  { id: 'fifty-thoughts', emoji: '📖', title: 'Fifty Thoughts', desc: '50 entries written' },
+  { id: 'full-spectrum', emoji: '🌈', title: 'Full Spectrum', desc: 'Felt every emotion' },
   { id: 'night-owl', emoji: '🦉', title: 'Night Owl', desc: 'Journaled after midnight' },
+  { id: 'dawn-writer', emoji: '🌅', title: 'Dawn Writer', desc: 'Wrote between 5 and 8am' },
+  { id: 'deep-feeler', emoji: '🌊', title: 'Deep Feeler', desc: 'An entry at 90%+ intensity' },
+  { id: 'wordsmith', emoji: '✍️', title: 'Wordsmith', desc: 'Wrote a 500+ character entry' },
+  { id: 'sunshine', emoji: '☀️', title: 'Sunshine', desc: 'Felt joy five times' },
+  { id: 'tender-heart', emoji: '💗', title: 'Tender Heart', desc: 'Felt love five times' },
 ];
 
 export function badgeById(id: string): BadgeDef | undefined {
@@ -87,9 +98,12 @@ export interface GameUpdate {
 export function applyEntryToGame(
   game: GameState,
   entry: Entry,
-  allEntries: Entry[]
+  allEntries: Entry[],
+  now: number = Date.now()
 ): GameUpdate {
-  const today = dayKey(entry.createdAt);
+  // Streaks track when you actually journaled (real time), so backdating an
+  // entry's content date never rewinds or breaks your streak.
+  const today = dayKey(now);
   let streak = game.streak;
   if (game.lastEntryDay === null) {
     streak = 1;
@@ -117,12 +131,21 @@ export function applyEntryToGame(
   if (entry.inputType === 'voice') award('spoken-soul');
   if (streak >= 3) award('seedling');
   if (streak >= 7) award('week-of-wondering');
+  if (streak >= 14) award('fortnight');
   if (streak >= 30) award('moon-cycle');
+  if (streak >= 90) award('season-cycle');
   if (real.length >= 10) award('ten-thoughts');
+  if (real.length >= 50) award('fifty-thoughts');
   const felt = new Set(real.map((e) => e.analysis.emotion));
   if (EMOTION_KEYS.every((k) => felt.has(k))) award('full-spectrum');
-  const hour = new Date(entry.createdAt).getHours();
+  const hour = new Date(now).getHours();
   if (hour >= 0 && hour < 4) award('night-owl');
+  if (hour >= 5 && hour < 8) award('dawn-writer');
+  if (entry.analysis.intensity >= 90) award('deep-feeler');
+  if (entry.text.trim().length >= 500) award('wordsmith');
+  const emotionCount = (k: string) => real.filter((e) => e.analysis.emotion === k).length;
+  if (emotionCount('joy') >= 5) award('sunshine');
+  if (emotionCount('love') >= 5) award('tender-heart');
 
   earnedXp += newBadges.length * 15;
 

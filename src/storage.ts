@@ -2,23 +2,21 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Entry, GameState, Settings } from './types';
 import { defaultGame } from './gamification';
 
-const K_ENTRIES = '@inkling/entries';
-const K_GAME = '@inkling/game';
-const K_SETTINGS = '@inkling/settings';
-const K_SEEDED = '@inkling/seeded';
+// Data is namespaced per account (scope = the signed-in user id, or 'guest'
+// when cloud is not configured), so two accounts on the same device never see
+// each other's cached data.
+const nsEntries = (scope: string) => `@inkling/${scope}/entries`;
+const nsGame = (scope: string) => `@inkling/${scope}/game`;
+const nsSettings = (scope: string) => `@inkling/${scope}/settings`;
+const nsSeeded = (scope: string) => `@inkling/${scope}/seeded`;
+const nsDaily = (scope: string) => `@inkling/${scope}/daily`;
+
+// The OpenAI key is a device secret, not account data: kept global and never
+// synced to the cloud.
+const K_API_KEY = '@inkling/apiKey';
 
 export function defaultSettings(): Settings {
-  return { apiKey: '', autoTailor: true, name: '' };
-}
-
-async function readJson<T>(key: string, fallback: T): Promise<T> {
-  try {
-    const raw = await AsyncStorage.getItem(key);
-    if (!raw) return fallback;
-    return { ...fallback, ...(JSON.parse(raw) as T) };
-  } catch {
-    return fallback;
-  }
+  return { apiKey: '', autoTailor: true, name: '', onboarded: false };
 }
 
 const DASH_RE = /\s*[—–]\s*/g;
@@ -57,49 +55,93 @@ function deDashEntry(e: Entry): Entry {
   };
 }
 
-export async function loadEntries(): Promise<Entry[]> {
+export async function loadEntries(scope: string): Promise<Entry[]> {
   try {
-    const raw = await AsyncStorage.getItem(K_ENTRIES);
+    const raw = await AsyncStorage.getItem(nsEntries(scope));
     if (!raw) return [];
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
     const entries = (arr as Entry[]).map(deDashEntry);
-    if (JSON.stringify(entries) !== raw) await saveEntries(entries);
+    if (JSON.stringify(entries) !== raw) await saveEntries(scope, entries);
     return entries;
   } catch {
     return [];
   }
 }
 
-export async function saveEntries(entries: Entry[]): Promise<void> {
-  await AsyncStorage.setItem(K_ENTRIES, JSON.stringify(entries));
+export async function saveEntries(scope: string, entries: Entry[]): Promise<void> {
+  await AsyncStorage.setItem(nsEntries(scope), JSON.stringify(entries));
 }
 
-export async function loadGame(): Promise<GameState> {
-  return readJson<GameState>(K_GAME, defaultGame());
+export async function loadGame(scope: string): Promise<GameState> {
+  try {
+    const raw = await AsyncStorage.getItem(nsGame(scope));
+    if (!raw) return defaultGame();
+    return { ...defaultGame(), ...(JSON.parse(raw) as GameState) };
+  } catch {
+    return defaultGame();
+  }
 }
 
-export async function saveGame(game: GameState): Promise<void> {
-  await AsyncStorage.setItem(K_GAME, JSON.stringify(game));
+export async function saveGame(scope: string, game: GameState): Promise<void> {
+  await AsyncStorage.setItem(nsGame(scope), JSON.stringify(game));
 }
 
-export async function loadSettings(): Promise<Settings> {
-  return readJson<Settings>(K_SETTINGS, defaultSettings());
+export async function loadSettings(scope: string): Promise<Settings> {
+  const base = defaultSettings();
+  try {
+    const [raw, apiKey] = await Promise.all([
+      AsyncStorage.getItem(nsSettings(scope)),
+      AsyncStorage.getItem(K_API_KEY),
+    ]);
+    const scoped = raw ? (JSON.parse(raw) as Partial<Settings>) : {};
+    return { ...base, ...scoped, apiKey: apiKey ?? '' };
+  } catch {
+    return base;
+  }
 }
 
-export async function saveSettings(s: Settings): Promise<void> {
-  await AsyncStorage.setItem(K_SETTINGS, JSON.stringify(s));
+export async function saveSettings(scope: string, s: Settings): Promise<void> {
+  const { apiKey, ...scoped } = s;
+  await AsyncStorage.setItem(nsSettings(scope), JSON.stringify(scoped));
+  await AsyncStorage.setItem(K_API_KEY, apiKey ?? '');
 }
 
-export async function eraseAll(): Promise<void> {
-  await AsyncStorage.multiRemove([K_ENTRIES, K_GAME, K_SETTINGS, K_SEEDED]);
+// Clears one account's data on this device (does not touch the cloud).
+export async function eraseScope(scope: string): Promise<void> {
+  await AsyncStorage.multiRemove([
+    nsEntries(scope),
+    nsGame(scope),
+    nsSettings(scope),
+    nsSeeded(scope),
+    nsDaily(scope),
+  ]);
+}
+
+// ---------- daily creation counter (rate limit) ----------
+// Counts how many entries were created today (by real time, so backdating an
+// entry cannot be used to dodge the cap).
+
+export async function loadDailyCount(scope: string, dayKey: string): Promise<number> {
+  try {
+    const raw = await AsyncStorage.getItem(nsDaily(scope));
+    if (!raw) return 0;
+    const o = JSON.parse(raw) as { day?: string; count?: number };
+    return o.day === dayKey ? o.count ?? 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function saveDailyCount(scope: string, dayKey: string, count: number): Promise<void> {
+  await AsyncStorage.setItem(nsDaily(scope), JSON.stringify({ day: dayKey, count }));
 }
 
 export function makeId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// ---------- Sample entries (so the app feels alive on first open) ----------
+// ---------- Sample entries (so the app feels alive in guest mode) ----------
 
 const DAY = 86400000;
 
@@ -111,7 +153,7 @@ function sample(
 ): Entry {
   return {
     id: makeId() + `-s${daysAgo}`,
-    createdAt: Date.now() - daysAgo * DAY - (daysAgo * 37) % 9 * 3600000,
+    createdAt: Date.now() - daysAgo * DAY - ((daysAgo * 37) % 9) * 3600000,
     text,
     inputType,
     tailored: inputType === 'voice',
@@ -232,11 +274,13 @@ export function buildSampleEntries(): Entry[] {
   ];
 }
 
-export async function seedIfFirstRun(existing: Entry[]): Promise<Entry[] | null> {
-  const seeded = await AsyncStorage.getItem(K_SEEDED);
+// Samples are only seeded in guest mode; real accounts start clean.
+export async function seedIfFirstRun(scope: string, existing: Entry[]): Promise<Entry[] | null> {
+  if (scope !== 'guest') return null;
+  const seeded = await AsyncStorage.getItem(nsSeeded(scope));
   if (seeded || existing.length > 0) return null;
   const samples = buildSampleEntries();
-  await saveEntries(samples);
-  await AsyncStorage.setItem(K_SEEDED, '1');
+  await saveEntries(scope, samples);
+  await AsyncStorage.setItem(nsSeeded(scope), '1');
   return samples;
 }

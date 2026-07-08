@@ -1,5 +1,5 @@
-import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useMemo, useRef, useState } from 'react';
+import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Entry, EmotionKey } from '../types';
 import { EMOTIONS, EMOTION_KEYS } from '../emotions';
 import { palette } from '../theme';
@@ -50,47 +50,143 @@ export function EmotionDistribution({ entries }: { entries: Entry[] }) {
   );
 }
 
-// 14-day strip: one dot per day, colored by that day's dominant emotion.
-export function MoodTimeline({ entries }: { entries: Entry[] }) {
-  const byDay = new Map<string, Entry[]>();
-  entries.forEach((e) => {
-    const k = dayKey(e.createdAt);
-    byDay.set(k, [...(byDay.get(k) ?? []), e]);
-  });
+const ROW_LABELS = ['', 'M', '', 'W', '', 'F', '']; // weekday rows (Sun=0), minimal
+const CELL_MAX = 15; // keep the grid small
 
-  const days: { label: string; emotion: EmotionKey | null }[] = [];
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86400000);
-    const k = dayKey(d.getTime());
-    const dayEntries = byDay.get(k) ?? [];
-    let emotion: EmotionKey | null = null;
-    if (dayEntries.length > 0) {
-      // dominant = highest intensity that day
-      emotion = dayEntries.reduce((a, b) =>
-        a.analysis.intensity >= b.analysis.intensity ? a : b
-      ).analysis.emotion;
-    }
-    days.push({
-      label: 'SMTWTFS'[d.getDay()],
-      emotion,
+interface Cell {
+  key: string;
+  inMonth: boolean;
+  future: boolean;
+  emotion: EmotionKey | null;
+  intensity: number;
+}
+
+// One calendar month, GitHub-style (week columns, weekday rows), kept small.
+// Swipe left/right or tap the arrows to move between months.
+export function MoodMonthGrid({ entries }: { entries: Entry[] }) {
+  const [width, setWidth] = useState(300);
+  const [offset, setOffset] = useState(0); // 0 = current month, negative = past
+
+  const byDay = useMemo(() => {
+    const m = new Map<string, Entry[]>();
+    entries.forEach((e) => {
+      const k = dayKey(e.createdAt);
+      m.set(k, [...(m.get(k) ?? []), e]);
     });
+    return m;
+  }, [entries]);
+
+  const now = new Date();
+  const todayKey = dayKey(now.getTime());
+  const view = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+  const year = view.getFullYear();
+  const month = view.getMonth();
+  const firstDow = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const numCols = Math.ceil((firstDow + daysInMonth) / 7);
+
+  const weeks: Cell[][] = [];
+  for (let w = 0; w < numCols; w++) {
+    const col: Cell[] = [];
+    for (let d = 0; d < 7; d++) {
+      const dayNum = w * 7 + d - firstDow + 1;
+      if (dayNum < 1 || dayNum > daysInMonth) {
+        col.push({ key: `pad-${w}-${d}`, inMonth: false, future: false, emotion: null, intensity: 0 });
+        continue;
+      }
+      const date = new Date(year, month, dayNum);
+      const k = dayKey(date.getTime());
+      const future = date.getTime() > now.getTime() && k !== todayKey;
+      const dayEntries = byDay.get(k) ?? [];
+      let emotion: EmotionKey | null = null;
+      let intensity = 0;
+      if (dayEntries.length > 0) {
+        const dom = dayEntries.reduce((a, b) => {
+          if (b.analysis.intensity !== a.analysis.intensity)
+            return b.analysis.intensity > a.analysis.intensity ? b : a;
+          return b.createdAt > a.createdAt ? b : a; // stable tiebreak
+        });
+        emotion = dom.analysis.emotion;
+        intensity = dom.analysis.intensity;
+      }
+      col.push({ key: k, inMonth: true, future, emotion, intensity });
+    }
+    weeks.push(col);
   }
 
+  const labelW = 16;
+  const gap = 4;
+  const fit = Math.floor((width - labelW - (numCols - 1) * gap) / numCols);
+  const cell = Math.max(11, Math.min(CELL_MAX, fit));
+  const cellRadius = Math.max(3, Math.round(cell * 0.28));
+  const gridW = labelW + numCols * cell + (numCols - 1) * gap;
+
+  const canNext = offset < 0;
+  const go = (delta: number) => setOffset((o) => Math.min(0, o + delta));
+
+  const pan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy),
+      onPanResponderRelease: (_e, g) => {
+        if (g.dx > 40) go(-1);
+        else if (g.dx < -40) go(1);
+      },
+    })
+  ).current;
+
+  const monthLabel = view.toLocaleDateString([], { month: 'long', year: 'numeric' });
+
   return (
-    <View style={styles.timelineRow}>
-      {days.map((d, i) => (
-        <View key={i} style={{ alignItems: 'center', gap: 4 }}>
-          <View
-            style={[
-              styles.dot,
-              d.emotion
-                ? { backgroundColor: EMOTIONS[d.emotion].color }
-                : { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: palette.line },
-            ]}
-          />
-          <Text style={styles.dotLabel}>{d.label}</Text>
+    <View onLayout={(e) => setWidth(Math.round(e.nativeEvent.layout.width))}>
+      <View style={styles.gridHeaderRow}>
+        <Pressable onPress={() => go(-1)} hitSlop={10} style={styles.arrowBtn}>
+          <Text style={styles.arrow}>‹</Text>
+        </Pressable>
+        <Text style={styles.gridMonth}>{monthLabel}</Text>
+        <Pressable onPress={() => canNext && go(1)} hitSlop={10} style={styles.arrowBtn}>
+          <Text style={[styles.arrow, !canNext && { opacity: 0.25 }]}>›</Text>
+        </Pressable>
+      </View>
+      <View style={{ alignItems: 'center' }}>
+        <View style={{ flexDirection: 'row', width: gridW }} {...pan.panHandlers}>
+          <View style={{ width: labelW, gap }}>
+            {ROW_LABELS.map((l, i) => (
+              <View key={i} style={{ height: cell, justifyContent: 'center' }}>
+                <Text style={styles.weekdayLabel}>{l}</Text>
+              </View>
+            ))}
+          </View>
+          <View style={{ flexDirection: 'row', gap }}>
+            {weeks.map((col, wi) => (
+              <View key={wi} style={{ gap }}>
+                {col.map((c) => {
+                  if (!c.inMonth || c.future) {
+                    return <View key={c.key} style={{ width: cell, height: cell }} />;
+                  }
+                  const isToday = c.key === todayKey;
+                  const filled = c.emotion != null;
+                  const opacity = filled ? 0.45 + 0.55 * (c.intensity / 100) : 1;
+                  return (
+                    <View
+                      key={c.key}
+                      style={{
+                        width: cell,
+                        height: cell,
+                        borderRadius: cellRadius,
+                        backgroundColor: filled ? EMOTIONS[c.emotion as EmotionKey].color : palette.line,
+                        opacity,
+                        borderWidth: isToday ? 1.5 : 0,
+                        borderColor: palette.ink,
+                      }}
+                    />
+                  );
+                })}
+              </View>
+            ))}
+          </View>
         </View>
-      ))}
+      </View>
+      <Text style={styles.gridHint}>swipe to change months</Text>
     </View>
   );
 }
@@ -118,19 +214,29 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: palette.inkSoft,
   },
-  timelineRow: {
+  gridHeaderRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+    marginBottom: 10,
   },
-  dot: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
+  gridMonth: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: palette.ink,
+    minWidth: 124,
+    textAlign: 'center',
   },
-  dotLabel: {
+  arrowBtn: { paddingHorizontal: 6, paddingVertical: 2 },
+  arrow: { fontSize: 20, fontWeight: '800', color: palette.accent, lineHeight: 22 },
+  weekdayLabel: { fontSize: 8.5, color: palette.inkFaint, fontWeight: '700' },
+  gridHint: {
     fontSize: 10,
     color: palette.inkFaint,
     fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 8,
   },
   empty: {
     color: palette.inkSoft,

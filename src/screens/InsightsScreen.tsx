@@ -1,40 +1,47 @@
-import React from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Entry, GameState } from '../types';
 import { palette, serif } from '../theme';
 import { emotionMeta } from '../emotions';
 import { BADGES, levelFor } from '../gamification';
 import EmotionAvatar from '../components/EmotionAvatar';
 import { Card, Chip, ProgressBar, SectionTitle } from '../components/ui';
-import { EmotionDistribution, MoodTimeline } from '../components/Charts';
+import { EmotionDistribution, MoodMonthGrid } from '../components/Charts';
 import KnowledgeGraph from '../components/KnowledgeGraph';
 
 interface Props {
   entries: Entry[];
   game: GameState;
+  apiKey: string;
   onOpenEntry: (id: string) => void;
 }
 
-export default function InsightsScreen({ entries, game, onOpenEntry }: Props) {
-  const sorted = [...entries].sort((a, b) => a.createdAt - b.createdAt);
-  const earliest = sorted[0];
-  const latest = sorted[sorted.length - 1];
+export default function InsightsScreen({ entries, game, apiKey, onOpenEntry }: Props) {
+  const [badgesOpen, setBadgesOpen] = useState(false);
   const level = levelFor(game.xp);
+
+  const { earliest, latest } = useMemo(() => {
+    const s = [...entries].sort((a, b) => a.createdAt - b.createdAt);
+    return { earliest: s[0] ?? null, latest: s[s.length - 1] ?? null };
+  }, [entries]);
 
   const avgIntensity =
     entries.length > 0
       ? Math.round(entries.reduce((s, e) => s + e.analysis.intensity, 0) / entries.length)
       : 0;
 
-  // most frequent philosopher
-  const philCounts = new Map<string, { school: string; count: number }>();
-  entries.forEach((e) => {
-    const p = e.analysis.philosopher;
-    if (!p) return;
-    const cur = philCounts.get(p.name) ?? { school: p.school, count: 0 };
-    philCounts.set(p.name, { school: p.school, count: cur.count + 1 });
-  });
-  const topPhil = [...philCounts.entries()].sort((a, b) => b[1].count - a[1].count)[0];
+  // most frequent philosopher (null when none matched yet)
+  const topPhil = useMemo(() => {
+    const counts = new Map<string, { school: string; count: number }>();
+    entries.forEach((e) => {
+      const p = e.analysis.philosopher;
+      if (!p) return;
+      const cur = counts.get(p.name) ?? { school: p.school, count: 0 };
+      counts.set(p.name, { school: p.school, count: cur.count + 1 });
+    });
+    const ranked = [...counts.entries()].sort((a, b) => b[1].count - a[1].count);
+    return ranked.length > 0 ? ranked[0] : null;
+  }, [entries]);
 
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
@@ -43,12 +50,12 @@ export default function InsightsScreen({ entries, game, onOpenEntry }: Props) {
 
       <SectionTitle>Your mind, mapped</SectionTitle>
       <Card style={{ padding: 12 }}>
-        <KnowledgeGraph entries={entries} onOpenEntry={onOpenEntry} />
+        <KnowledgeGraph entries={entries} apiKey={apiKey} onOpenEntry={onOpenEntry} />
       </Card>
 
-      <SectionTitle>Last 14 days</SectionTitle>
+      <SectionTitle>This month</SectionTitle>
       <Card>
-        <MoodTimeline entries={entries} />
+        <MoodMonthGrid entries={entries} />
       </Card>
 
       <SectionTitle>Emotion mix</SectionTitle>
@@ -153,22 +160,43 @@ export default function InsightsScreen({ entries, game, onOpenEntry }: Props) {
         </View>
       </Card>
 
-      <SectionTitle>Badges</SectionTitle>
+      <SectionTitle>
+        Badges · {game.badges.length}/{BADGES.length}
+      </SectionTitle>
       <Card>
-        <View style={styles.badgeGrid}>
-          {BADGES.map((b) => {
-            const earned = game.badges.includes(b.id);
-            return (
-              <View key={b.id} style={[styles.badge, !earned && styles.badgeLocked]}>
-                <Text style={{ fontSize: 26, opacity: earned ? 1 : 0.35 }}>{b.emoji}</Text>
-                <Text style={[styles.badgeTitle, !earned && { color: palette.inkFaint }]}>
-                  {b.title}
-                </Text>
-                <Text style={styles.badgeDesc}>{b.desc}</Text>
-              </View>
-            );
-          })}
-        </View>
+        {game.badges.length === 0 ? (
+          <Text style={styles.badgeEmpty}>
+            No badges yet. Your first entry earns First Ink 🪶
+          </Text>
+        ) : (
+          <View style={styles.medalRow}>
+            {(badgesOpen ? BADGES : BADGES.filter((b) => game.badges.includes(b.id))).map((b) => {
+              const earned = game.badges.includes(b.id);
+              return (
+                <View key={b.id} style={styles.medalWrap}>
+                  <View style={[styles.medal, !earned && styles.medalLocked]}>
+                    <Text style={{ fontSize: 22, opacity: earned ? 1 : 0.3 }}>{b.emoji}</Text>
+                  </View>
+                  {badgesOpen && (
+                    <Text
+                      style={[styles.medalLabel, !earned && { color: palette.inkFaint }]}
+                      numberOfLines={1}
+                    >
+                      {b.title}
+                    </Text>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        )}
+        {(badgesOpen || game.badges.length < BADGES.length) && (
+          <Pressable onPress={() => setBadgesOpen((v) => !v)} style={styles.seeAll} hitSlop={6}>
+            <Text style={styles.seeAllText}>
+              {badgesOpen ? 'Show earned only' : `See all ${BADGES.length} badges`}
+            </Text>
+          </Pressable>
+        )}
       </Card>
       <View style={{ height: 110 }} />
     </ScrollView>
@@ -209,16 +237,25 @@ const styles = StyleSheet.create({
   journeyNum: { fontSize: 16, fontWeight: '800', color: palette.ink },
   journeyLabel: { fontSize: 11, color: palette.inkSoft, fontWeight: '600', marginTop: 2 },
   toNext: { fontSize: 12, color: palette.inkSoft, fontWeight: '700' },
-  badgeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  badge: {
-    width: '47%',
-    backgroundColor: palette.bg,
-    borderRadius: 16,
-    padding: 12,
+  badgeEmpty: { fontSize: 13, color: palette.inkSoft, lineHeight: 19 },
+  medalRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  medalWrap: { alignItems: 'center', width: 56 },
+  medal: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: palette.goldSoft,
     alignItems: 'center',
-    flexGrow: 1,
+    justifyContent: 'center',
   },
-  badgeLocked: { opacity: 0.75 },
-  badgeTitle: { fontSize: 13, fontWeight: '800', color: palette.ink, marginTop: 6 },
-  badgeDesc: { fontSize: 11, color: palette.inkSoft, textAlign: 'center', marginTop: 2 },
+  medalLocked: { backgroundColor: palette.line },
+  medalLabel: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: palette.inkSoft,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  seeAll: { marginTop: 16, alignItems: 'center' },
+  seeAllText: { color: palette.accent, fontWeight: '800', fontSize: 13 },
 });

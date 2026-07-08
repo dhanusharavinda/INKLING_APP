@@ -1,6 +1,8 @@
 import { Platform } from 'react-native';
-import { Analysis, EmotionKey, PhilosopherMatch } from './types';
-import { EMOTION_KEYS } from './emotions';
+import { fetch as expoFetch } from 'expo/fetch';
+import { File } from 'expo-file-system';
+import { Analysis, Entry, EmotionKey, PhilosopherMatch } from './types';
+import { consciousnessLevel, EMOTION_KEYS, EMOTIONS, HAWKINS } from './emotions';
 
 const API_BASE = 'https://api.openai.com/v1';
 const CHAT_MODEL = 'gpt-4o-mini';
@@ -13,26 +15,36 @@ export function stripEmDashes(s: string): string {
 // ---------- Whisper speech-to-text ----------
 
 export async function transcribeAudio(uri: string, apiKey: string): Promise<string> {
-  const form = new FormData();
+  const endpoint = `${API_BASE}/audio/transcriptions`;
+  const auth = { Authorization: `Bearer ${apiKey}` };
+
+  // Web: the recording is a blob URL, so read it into a real Blob and post it
+  // with the browser's fetch + FormData.
   if (Platform.OS === 'web') {
     const res = await fetch(uri);
     const blob = await res.blob();
     const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+    const form = new FormData();
     form.append('file', blob, `note.${ext}`);
-  } else {
-    form.append('file', {
-      uri,
-      name: 'note.m4a',
-      type: 'audio/m4a',
-    } as unknown as Blob);
+    form.append('model', 'whisper-1');
+    const r = await fetch(endpoint, { method: 'POST', headers: auth, body: form });
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      throw new Error(`Whisper error ${r.status}: ${body.slice(0, 200)}`);
+    }
+    const json = (await r.json()) as { text?: string };
+    return stripEmDashes((json.text ?? '').trim());
   }
-  form.append('model', 'whisper-1');
 
-  const r = await fetch(`${API_BASE}/audio/transcriptions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form,
-  });
+  // Native: SDK 56 no longer accepts a plain { uri, name, type } FormData part
+  // ("Unsupported FormDataPart implementation"). The expo-file-system File
+  // implements Blob, so append it directly and post with expo/fetch, which
+  // streams the file and keeps its .m4a name so Whisper detects the format.
+  const file = new File(uri);
+  const form = new FormData();
+  form.append('file', file as unknown as Blob);
+  form.append('model', 'whisper-1');
+  const r = await expoFetch(endpoint, { method: 'POST', headers: auth, body: form });
   if (!r.ok) {
     const body = await r.text().catch(() => '');
     throw new Error(`Whisper error ${r.status}: ${body.slice(0, 200)}`);
@@ -55,16 +67,23 @@ they can reread the entry and remember exactly how it felt to be them in that mo
 
 Respond ONLY with a JSON object with these exact keys:
 {
-  "emotion": one of ["joy","sadness","anger","fear","calm","love","wonder","disgust","anguish"], the dominant emotion,
+  "emotion": one of ["joy","sadness","anger","fear","calm","love","wonder","disgust","anguish","confusion","peace"], the dominant emotion,
   "secondary": one of the same list or null, a quieter second emotion if present,
-  // Guidance: "sadness" covers grief, despair, depression, and hopeless or suicidal feelings ("I want to die", "what's the point"). "anguish" is for raw pain, agony, torment, betrayal, or wanting revenge. Never default unclear or neutral entries to "wonder"; use "calm" when unsure.
+  // Emotion guidance, read carefully and classify precisely (accuracy is the whole point):
+  //   joy=delight/celebration, love=warmth/connection, wonder=curiosity/awe at ideas, calm=settled and at ease,
+  //   sadness=grief/despair/depression/hopeless or suicidal ("I want to die","what's the point"),
+  //   fear=anxiety/dread/worry, anger=irritation to rage, disgust=contempt/revulsion,
+  //   anguish=raw pain/agony/torment/betrayal/wanting revenge,
+  //   confusion=incoherent, disoriented, "I don't know", or input that is gibberish / not real words,
+  //   peace=deep self-acceptance, wholeness, surrender, oneness, "I am enough" (this is the HIGHEST state; use it for genuine contentment-with-being, not mere calm).
+  // Pick the single most accurate dominant emotion. Do NOT default to "calm" or "wonder" out of laziness; use "confusion" for incoherent input and "peace" for true acceptance/transcendence.
   "intensity": integer 0-100, how strongly the emotion is felt,
   "tone": short phrase (3-6 words) describing the voice of the entry, e.g. "quietly hopeful, a little tired",
   "mindset": 1-2 sentences capturing their current mindset and beliefs as expressed here. Write in second person ("You believe..."). Simple but philosophical.
   "thinkingStyle": 1 sentence on HOW they are thinking (e.g. comparing past and present self, weighing trade-offs, catastrophizing, savoring). Second person.
   "essence": ONE short line distilling the entry's core thought, like a tiny aphorism in their own spirit,
   "reflection": 1-2 gentle, simple-but-philosophical sentences a kind friend might say back. No advice-dumping, no clichés.
-  "philosopher": { "name": string, "school": string, "why": 1 sentence on why their thought pattern in THIS entry resembles that philosopher }. Pick honestly from any tradition (Stoics, Epicurus, Socrates, Laozi, Buddha, Kierkegaard, Camus, Simone Weil, Nietzsche, etc.),
+  "philosopher": { "name": string, "school": string, "why": 1 sentence on why their thought pattern in THIS entry resembles that philosopher }. ACCURACY REQUIRED: name only a real, well-documented philosopher and state their genuine school and actual ideas. Never invent a philosopher, misattribute a school, fabricate quotes, or claim positions they did not hold. If unsure, choose a widely known thinker (Stoics, Epicurus, Socrates, Laozi, Buddha, Kierkegaard, Camus, Simone Weil, Nietzsche, etc.) whose documented ideas genuinely fit, and keep "why" general but truthful rather than inventing specifics,
   "themes": array of 1-3 short lowercase topic words this entry is about (e.g. ["money","career"], ["family"], ["change","fear"]). Reuse plain everyday words so themes can recur across entries,
   "tailoredText": ${'`'}null${'`'} unless asked to tailor (see user message). When tailoring: lightly clean the raw spoken transcript into a readable journal entry. Fix filler words and rambling, keep their voice, their phrases, their feelings. Never invent content. First person, same language they used.
 }
@@ -143,6 +162,149 @@ export async function analyzeWithAI(
   return { analysis, tailoredText };
 }
 
+// ---------- "Why?" : aura guidance generated on demand ----------
+
+// Three parts, shown when the user taps "why?": purpose (a spiritual / universal
+// / manifestation reason to raise your frequency, shown on top), why (why the
+// aura sits where it does), and raise (personalized actions to lift it).
+export interface AuraGuidance {
+  purpose: string;
+  why: string;
+  raise: string[];
+}
+
+function auraStats(entries: Entry[]) {
+  const counts = new Map<EmotionKey, number>();
+  entries.forEach((e) => counts.set(e.analysis.emotion, (counts.get(e.analysis.emotion) ?? 0) + 1));
+  const total = entries.length;
+  const overall = Math.round(
+    [...counts.entries()].reduce((s, [k, c]) => s + HAWKINS[k] * c, 0) / Math.max(1, total)
+  );
+  const level = consciousnessLevel(overall).label;
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  return { counts, total, overall, level, ranked };
+}
+
+function topThemes(entries: Entry[], n = 4): string[] {
+  const m = new Map<string, number>();
+  entries.forEach((e) => (e.analysis.themes ?? []).forEach((t) => m.set(t, (m.get(t) ?? 0) + 1)));
+  return [...m.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([t]) => t);
+}
+
+const PURPOSE_LINE =
+  'Every emotion you hold broadcasts a frequency, and what you hold steady, you attract. As your field rises toward love, gratitude, and peace, your choices clear and what you are seeking begins seeking you. Raising it is how you align with what you want to manifest.';
+
+const RAISE_ACTION: Partial<Record<EmotionKey, string>> = {
+  anguish: 'Forgive one person, even yourself, and write why you choose peace over the wound.',
+  anger: 'Release one grievance onto paper, then name what it was trying to protect.',
+  fear: 'Name the fear plainly, then list three things already within your control today.',
+  sadness: 'Step outside for a slow ten-minute walk and notice five small good things.',
+  confusion: 'Write the single question under the noise, then one tiny next step.',
+  disgust: 'Trade one judgment for curiosity: ask what this might be here to teach you.',
+};
+
+function localAuraGuidance(entries: Entry[]): AuraGuidance {
+  const { total, overall, level, ranked } = auraStats(entries);
+  if (total === 0) {
+    return {
+      purpose: PURPOSE_LINE,
+      why: 'Write a few entries and your aura will take shape here.',
+      raise: [
+        'Write one honest entry tonight, exactly as you feel.',
+        'Name one feeling you want more of this week.',
+        'Take three slow breaths before you begin.',
+      ],
+    };
+  }
+  const name = (k: EmotionKey) => EMOTIONS[k].label;
+  const top = ranked[0];
+  const lifts = ranked.filter(([k]) => HAWKINS[k] >= 400).map(([k]) => name(k));
+  const weighs = ranked.filter(([k]) => HAWKINS[k] < 150).map(([k]) => name(k));
+  let why = `Your aura sits at ${overall} Hz, the level of ${level}, because it is the weighted average of all ${total} ${total === 1 ? 'entry' : 'entries'}. ${name(top[0])} appears most (${top[1]}x), so it shapes the field the strongest.`;
+  if (lifts.length) why += ` ${lifts.join(' and ')} lift it higher.`;
+  if (weighs.length) why += ` ${weighs.join(' and ')} pull it down.`;
+
+  const raise: string[] = [];
+  for (const [k] of ranked) {
+    if (HAWKINS[k] >= 200) continue;
+    const a = RAISE_ACTION[k];
+    if (a && !raise.includes(a)) raise.push(a);
+    if (raise.length >= 3) break;
+  }
+  const extras = [
+    'End the day by writing one thing you are genuinely grateful for.',
+    'Do one small act of kindness with no audience.',
+    'Sit for two quiet minutes and simply feel your breath.',
+  ];
+  let ei = 0;
+  while (raise.length < 3) raise.push(extras[ei++]);
+  return { purpose: PURPOSE_LINE, why, raise: raise.slice(0, 3) };
+}
+
+// Generated ONLY when the user taps "why?". Token-optimized: it sends a compact
+// summary (level + emotion counts + themes + a few short essences), never the
+// full notes, returns structured JSON, and caps output. Falls back to a precise
+// local version when there is no API key.
+export async function explainAura(entries: Entry[], apiKey: string): Promise<AuraGuidance> {
+  if (entries.length === 0 || !apiKey) return localAuraGuidance(entries);
+
+  const { total, overall, level, ranked } = auraStats(entries);
+  const dist = ranked.map(([k, c]) => `${EMOTIONS[k].label} x${c} (${HAWKINS[k]}Hz)`).join(', ');
+  const recent = [...entries]
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 4)
+    .map((e) => `"${e.analysis.essence}" [${EMOTIONS[e.analysis.emotion].label}]`)
+    .join('; ');
+  const themes = topThemes(entries);
+  const summary = `Aura: ${overall} Hz, level "${level}". Across ${total} entries: ${dist}. Recurring themes: ${
+    themes.join(', ') || 'none yet'
+  }. Recent essences: ${recent}.`;
+
+  const system = `You are the spiritual, intuitive heart of a journaling app built on the Hawkins map of consciousness (frequencies from shame ~20 up to enlightenment ~700). From a compact summary of someone's emotional field, respond ONLY with a JSON object with exactly these keys:
+{
+  "purpose": 1-2 sentences in warm spiritual, universal, and manifestation language on WHY raising one's frequency matters (a higher field attracts, aligns, heals, and manifests). Inspiring, never preachy.
+  "why": 2-3 plain sentences explaining WHY their aura sits at the given level, naming which emotions lift it and which weigh it down, drawn from their actual data.
+  "raise": array of exactly 3 short, concrete, PERSONALIZED actions to lift their frequency, each tied to what is actually dragging them down (their lower emotions and recurring themes). Imperative voice, one sentence each.
+}
+Address them as "you". Make it specific to this person. Never use em dashes or en dashes.`;
+
+  try {
+    const r = await fetch(`${API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: CHAT_MODEL,
+        temperature: 0.6,
+        max_tokens: 360,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: summary },
+        ],
+      }),
+    });
+    if (!r.ok) return localAuraGuidance(entries);
+    const json = await r.json();
+    const content: string = json?.choices?.[0]?.message?.content ?? '{}';
+    const parsed = JSON.parse(content) as Partial<AuraGuidance>;
+    const fallback = localAuraGuidance(entries);
+    const raise =
+      Array.isArray(parsed.raise) && parsed.raise.length
+        ? parsed.raise.map((x) => stripEmDashes(String(x))).slice(0, 3)
+        : fallback.raise;
+    return {
+      purpose: parsed.purpose ? stripEmDashes(String(parsed.purpose)) : fallback.purpose,
+      why: parsed.why ? stripEmDashes(String(parsed.why)) : fallback.why,
+      raise,
+    };
+  } catch {
+    return localAuraGuidance(entries);
+  }
+}
+
 // ---------- Local fallback analysis (demo mode / offline) ----------
 
 const KEYWORDS: Record<EmotionKey, string[]> = {
@@ -155,7 +317,7 @@ const KEYWORDS: Record<EmotionKey, string[]> = {
   ],
   anger: ['angry', 'furious', 'unfair', 'hate', 'annoyed', 'frustrated', 'mad', 'rage', 'sick of'],
   fear: ['afraid', 'scared', 'anxious', 'worried', 'nervous', 'what if', 'panic', 'uncertain', 'risk'],
-  calm: ['calm', 'peace', 'quiet', 'slow', 'breathe', 'settled', 'okay with', 'accept', 'content'],
+  calm: ['calm', 'quiet', 'slow', 'breathe', 'settled', 'okay with', 'relaxed', 'at ease', 'steady'],
   love: ['love', 'family', 'friend', 'together', 'warm', 'care', 'home', 'heart', 'thankful for'],
   wonder: ['wonder', 'curious', 'why', 'realized', 'idea', 'maybe', 'perspective', 'changed my mind', 'learn'],
   disgust: ['disgust', 'gross', 'fake', 'cringe', 'cannot stand', "can't stand", 'shallow', 'pointless'],
@@ -164,7 +326,26 @@ const KEYWORDS: Record<EmotionKey, string[]> = {
     'torment', 'tortured', 'unbearable', 'betrayed', 'betrayal', 'hurt so', 'hurts so', 'wound',
     'wounded', 'ripped apart', 'wronged', 'they will pay',
   ],
+  confusion: [
+    'confused', 'confusing', 'so confused', "don't know", 'dont know', 'no idea', 'unsure',
+    'mixed up', 'makes no sense', "doesn't make sense", 'make sense of', "can't tell", 'cant tell',
+    'unclear', 'lost track', 'what is happening', 'baffled', 'puzzled', 'disoriented',
+  ],
+  peace: [
+    'at peace', 'inner peace', 'peaceful', "i'm enough", 'i am enough', 'am enough', 'enough as i am',
+    'enough just as i am', 'whole and enough', 'let go', 'letting go', 'surrender', 'serene', 'serenity',
+    'oneness', 'one with everything', 'at one with', 'grateful for everything', 'nothing to prove',
+    'home in myself', 'at peace with', 'made peace with',
+  ],
 };
+
+// Single-word tokens that appear in our keyword lists, used to recognize real
+// words when sniffing for gibberish.
+const KEYWORD_TOKENS = new Set(
+  Object.values(KEYWORDS)
+    .flat()
+    .flatMap((k) => k.split(/\s+/))
+);
 
 const PHILOSOPHERS: { match: string[]; p: PhilosopherMatch }[] = [
   {
@@ -269,8 +450,20 @@ export function analyzeLocally(text: string): Analysis {
     score: KEYWORDS[k].reduce((acc, w) => acc + (lower.includes(w) ? 1 : 0), 0),
   })).sort((a, b) => b.score - a.score);
 
-  const top = scores[0].score > 0 ? scores[0].k : 'calm';
-  const second = scores[1].score > 0 ? scores[1].k : null;
+  // Incoherent / gibberish input (e.g. "dawfaiwu"): no emotion words, no real
+  // words at all -> read it as confusion rather than guessing a feeling.
+  const tokens = lower.match(/[a-z]+/g) ?? [];
+  const knownWord = (t: string) =>
+    STOPWORDS.has(t) || !!TOPIC_ALIASES[t] || KEYWORD_TOKENS.has(t);
+  const gibberish =
+    tokens.length > 0 &&
+    tokens.length <= 6 &&
+    scores[0].score === 0 &&
+    tokens.some((t) => t.length >= 4) &&
+    tokens.every((t) => !knownWord(t));
+
+  const top: EmotionKey = gibberish ? 'confusion' : scores[0].score > 0 ? scores[0].k : 'calm';
+  const second = !gibberish && scores[1].score > 0 ? scores[1].k : null;
   const exclaims = (text.match(/!/g) ?? []).length;
   const intensity = Math.max(
     25,
@@ -293,6 +486,8 @@ export function analyzeLocally(text: string): Analysis {
     wonder: 'curious, turning things over',
     disgust: 'dry and unimpressed',
     anguish: 'raw and in pain',
+    confusion: 'foggy, trying to find the thread',
+    peace: 'serene, whole, and unhurried',
   };
 
   return {

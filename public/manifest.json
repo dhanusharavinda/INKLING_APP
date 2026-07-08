@@ -1,0 +1,17 @@
+{
+  "name": "Inkling",
+  "short_name": "Inkling",
+  "description": "A journal that remembers how you felt, and a little world for two.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FBF7F0",
+  "theme_color": "#FBF7F0",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

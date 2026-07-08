@@ -1,6 +1,69 @@
-import React from 'react';
-import { StyleSheet, Text, View, ViewStyle, TextStyle } from 'react-native';
-import { palette, radius, cardShadow, serif } from '../theme';
+import React, { useRef } from 'react';
+import {
+  Animated,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  ViewStyle,
+  TextStyle,
+} from 'react-native';
+import { palette, radius, cardShadow, serif, shadeHex } from '../theme';
+
+// Duolingo-style chunky button: a colored cap sitting on a darker base that
+// compresses when pressed.
+export function Button({
+  label,
+  onPress,
+  color = palette.accent,
+  textColor = '#FFFFFF',
+  disabled = false,
+  kind = 'solid',
+  style,
+}: {
+  label: string;
+  onPress: () => void;
+  color?: string;
+  textColor?: string;
+  disabled?: boolean;
+  kind?: 'solid' | 'soft' | 'ghost';
+  style?: ViewStyle;
+}) {
+  const press = useRef(new Animated.Value(0)).current;
+  const to = (v: number) =>
+    Animated.timing(press, { toValue: v, duration: 90, useNativeDriver: true }).start();
+  const translateY = press.interpolate({ inputRange: [0, 1], outputRange: [0, 3] });
+
+  const isSolid = kind === 'solid';
+  const isGhost = kind === 'ghost';
+  const capColor = isSolid ? color : isGhost ? 'transparent' : palette.accentSoft;
+  const baseColor = isSolid ? shadeHex(color, 0.28) : 'transparent';
+  const label2 = isSolid ? textColor : color;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => to(1)}
+      onPressOut={() => to(0)}
+      disabled={disabled}
+      style={[{ borderRadius: 18, backgroundColor: baseColor, opacity: disabled ? 0.5 : 1 }, style]}
+    >
+      <Animated.View
+        style={[
+          styles.btnCap,
+          {
+            backgroundColor: capColor,
+            transform: [{ translateY }],
+            borderWidth: isGhost ? 1.5 : 0,
+            borderColor: palette.line,
+          },
+        ]}
+      >
+        <Text style={[styles.btnText, { color: label2 }]}>{label}</Text>
+      </Animated.View>
+    </Pressable>
+  );
+}
 
 export function Card({
   children,
@@ -109,4 +172,12 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     width: '100%',
   },
+  btnCap: {
+    borderRadius: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnText: { fontSize: 15, fontWeight: '800', letterSpacing: 0.2 },
 });

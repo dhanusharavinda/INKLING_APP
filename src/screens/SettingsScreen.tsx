@@ -16,30 +16,38 @@ import { Card, SectionTitle } from '../components/ui';
 
 interface Props {
   settings: Settings;
+  email: string | null;
+  cloudEnabled: boolean;
   onChange: (s: Settings) => void;
-  onEraseAll: () => void;
+  onExport: () => void;
+  onDeleteAllData: () => void;
   onRemoveSamples: () => void;
+  onSignOut: () => void;
+  onDeleteAccount: () => void;
   hasSamples: boolean;
 }
 
-function confirm(title: string, message: string, onYes: () => void) {
+function confirm(title: string, message: string, onYes: () => void, yesLabel = 'Yes') {
   if (Platform.OS === 'web') {
-    // RN Alert buttons are a no-op on web
-    // eslint-disable-next-line no-alert
     if (typeof window !== 'undefined' && window.confirm(`${title}\n\n${message}`)) onYes();
     return;
   }
   Alert.alert(title, message, [
     { text: 'Cancel', style: 'cancel' },
-    { text: 'Yes', style: 'destructive', onPress: onYes },
+    { text: yesLabel, style: 'destructive', onPress: onYes },
   ]);
 }
 
 export default function SettingsScreen({
   settings,
+  email,
+  cloudEnabled,
   onChange,
-  onEraseAll,
+  onExport,
+  onDeleteAllData,
   onRemoveSamples,
+  onSignOut,
+  onDeleteAccount,
   hasSamples,
 }: Props) {
   const [showKey, setShowKey] = useState(false);
@@ -47,6 +55,22 @@ export default function SettingsScreen({
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
       <Text style={styles.title}>Settings</Text>
+
+      {cloudEnabled && (
+        <>
+          <SectionTitle>Account</SectionTitle>
+          <Card>
+            <Text style={styles.label}>Signed in as</Text>
+            <Text style={styles.accountEmail}>{email ?? 'unknown'}</Text>
+            <Pressable
+              onPress={() => confirm('Sign out?', 'You can sign back in anytime.', onSignOut, 'Sign out')}
+              style={styles.actionRow}
+            >
+              <Text style={styles.actionText}>Sign out</Text>
+            </Pressable>
+          </Card>
+        </>
+      )}
 
       <SectionTitle>You</SectionTitle>
       <Card>
@@ -65,7 +89,7 @@ export default function SettingsScreen({
         <Text style={styles.label}>OpenAI API key</Text>
         <Text style={styles.help}>
           Powers Whisper voice transcription and the deep emotion analysis. Stored only on this
-          device. Without it, Inkling runs in demo mode with a lighter local analysis.
+          device, never synced. Without it, Inkling runs in demo mode with a lighter local analysis.
         </Text>
         <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
           <TextInput
@@ -109,6 +133,9 @@ export default function SettingsScreen({
 
       <SectionTitle>Data</SectionTitle>
       <Card>
+        <Pressable onPress={onExport} style={styles.actionRow}>
+          <Text style={styles.actionText}>Export my journal (JSON)</Text>
+        </Pressable>
         {hasSamples && (
           <Pressable
             onPress={() =>
@@ -122,20 +149,46 @@ export default function SettingsScreen({
         <Pressable
           onPress={() =>
             confirm(
-              'Erase everything?',
-              'All entries, XP, streaks and settings will be gone. This cannot be undone.',
-              onEraseAll
+              'Delete all my data?',
+              cloudEnabled
+                ? 'Every entry, your XP, streaks and badges will be permanently deleted from this device and your account. This cannot be undone.'
+                : 'All entries, XP, streaks and settings will be gone. This cannot be undone.',
+              onDeleteAllData,
+              'Delete'
             )
           }
           style={styles.actionRow}
         >
-          <Text style={[styles.actionText, { color: palette.danger }]}>Erase all data</Text>
+          <Text style={[styles.actionText, { color: palette.danger }]}>Delete all my data</Text>
         </Pressable>
       </Card>
 
+      {cloudEnabled && (
+        <>
+          <SectionTitle>Danger zone</SectionTitle>
+          <Card>
+            <Pressable
+              onPress={() =>
+                confirm(
+                  'Delete your account?',
+                  'This permanently deletes your account and all of its data. This cannot be undone.',
+                  onDeleteAccount,
+                  'Delete account'
+                )
+              }
+              style={styles.actionRow}
+            >
+              <Text style={[styles.actionText, { color: palette.danger }]}>Delete my account</Text>
+            </Pressable>
+          </Card>
+        </>
+      )}
+
       <Text style={styles.footer}>
-        Inkling · a journal that remembers how you felt{'\n'}voice → Whisper · analysis → GPT ·
-        everything stays on your device
+        Inkling · a journal that remembers how you felt{'\n'}
+        {cloudEnabled
+          ? 'private to your account · protected by row-level security'
+          : 'everything stays on your device'}
       </Text>
       <View style={{ height: 110 }} />
     </ScrollView>
@@ -147,6 +200,7 @@ const styles = StyleSheet.create({
   container: { padding: 20, paddingTop: 26 },
   title: { fontFamily: serif, fontSize: 30, color: palette.ink, fontWeight: '700' as const },
   label: { fontSize: 14, fontWeight: '700', color: palette.ink },
+  accountEmail: { fontSize: 15, color: palette.inkSoft, fontWeight: '600', marginTop: 4 },
   help: { fontSize: 12.5, color: palette.inkSoft, lineHeight: 18, marginTop: 4, marginBottom: 10 },
   input: {
     backgroundColor: palette.bg,
