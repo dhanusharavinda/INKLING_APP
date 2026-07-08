@@ -591,6 +591,7 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
     const board = xo?.board ?? '.........';
     const winner = xo?.winner ?? '';
     const turn = xo?.nextTurn ?? 'X';
+    const emptyBoard = board === '.........';
     // a rejected tap always says why, so it never feels broken
     if (winner) {
       showXoHint('this round is over, start a new one below ♡');
@@ -600,7 +601,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
       showXoHint('that spot is taken 😌');
       return;
     }
-    if (turn !== mySymbol) {
+    // on an empty board anyone may start; after that, turns alternate
+    if (!emptyBoard && turn !== mySymbol) {
       showXoHint(`patience ♡ it's ${partnerName}'s turn ${iAmA ? '⭐' : '💗'}`);
       return;
     }
@@ -1055,6 +1057,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
                     ? xo.winner === mySymbol
                       ? 'you won! 🎀'
                       : `${partnerName} won this one 🏆`
+                    : (xo?.board ?? '.........') === '.........'
+                    ? 'fresh board, tap any square to start ♡'
                     : (xo?.nextTurn ?? 'X') === mySymbol
                     ? `your turn ${iAmA ? '💗' : '⭐'}`
                     : `${partnerName}'s turn…`}
@@ -1062,8 +1066,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
                 {xoHint && <Text style={styles.xoHint}>{xoHint}</Text>}
                 {(xo?.board ?? '.........') === '.........' && !xo?.winner && (
                   <Text style={styles.gameHint}>
-                    💗 plays first · you are {mySymbol === 'X' ? '💗' : '⭐'}, {partnerName} is{' '}
-                    {mySymbol === 'X' ? '⭐' : '💗'}
+                    you are {mySymbol === 'X' ? '💗' : '⭐'}, {partnerName} is{' '}
+                    {mySymbol === 'X' ? '⭐' : '💗'} · whoever taps first starts
                   </Text>
                 )}
                 {!!xo?.winner && (

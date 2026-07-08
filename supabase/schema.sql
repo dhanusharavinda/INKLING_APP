@@ -585,7 +585,8 @@ begin
   if x.winner <> '' then
     raise exception 'The round is over. Start a new one!';
   end if;
-  if x.next_turn <> me then
+  -- on an empty board, whoever taps first starts; after that, turns alternate
+  if x.board <> '.........' and x.next_turn <> me then
     raise exception 'Not your turn yet, patience ♡';
   end if;
   if substr(x.board, pos, 1) <> '.' then
