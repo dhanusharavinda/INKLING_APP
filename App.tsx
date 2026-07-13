@@ -453,6 +453,7 @@ export default function App() {
                 <UsScreen
                   userId={session?.userId ?? scope}
                   myName={settings.name}
+                  apiKey={settings.apiKey}
                   cloudEnabled={cloudEnabled && !!session}
                 />
               )}

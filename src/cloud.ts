@@ -3,10 +3,13 @@ import {
   CanvasItem,
   Entry,
   GameState,
+  HangmanState,
   PairAnswer,
   PairEvent,
   PairGameState,
   PairInfo,
+  PairSnap,
+  RpsState,
   XoState,
 } from './types';
 
@@ -725,6 +728,159 @@ export function onAnswersChange(pairId: string, cb: () => void): () => void {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'pair_answers', filter: `pair_id=eq.${pairId}` },
         () => cb()
+      )
+  );
+}
+
+// ---------- snaps: the memories calendar ----------
+
+function rowToSnap(r: any): PairSnap {
+  return {
+    id: r.id,
+    author: r.author,
+    day: String(r.day ?? ''),
+    items: Array.isArray(r.items) ? (r.items as PairSnap['items']).map((it: any) => it) : [],
+    question: String(r.question ?? ''),
+    answers: Array.isArray(r.answers) ? r.answers : null,
+    createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
+  };
+}
+
+// All snaps in a month ('YYYY-MM'), newest day first.
+export async function fetchSnaps(pairId: string, monthPrefix: string): Promise<PairSnap[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('pair_snaps')
+    .select('*')
+    .eq('pair_id', pairId)
+    .like('day', `${monthPrefix}%`)
+    .order('created_at', { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map(rowToSnap);
+}
+
+export async function saveSnap(pairId: string, snap: PairSnap): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.from('pair_snaps').insert({
+    id: snap.id,
+    pair_id: pairId,
+    author: snap.author,
+    day: snap.day,
+    items: snap.items,
+    question: snap.question,
+    answers: snap.answers,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteSnap(id: string): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.from('pair_snaps').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+// ---------- hangman ----------
+
+function rowToHangman(r: any): HangmanState {
+  const status = ['idle', 'playing', 'won', 'lost'].includes(r.status) ? r.status : 'idle';
+  return {
+    setter: r.setter ?? null,
+    word: String(r.word ?? ''),
+    guessed: String(r.guessed ?? ''),
+    wrongs: Number(r.wrongs) || 0,
+    status,
+    winsA: Number(r.wins_a) || 0,
+    winsB: Number(r.wins_b) || 0,
+    updatedAt: r.updated_at ? Date.parse(r.updated_at) : Date.now(),
+  };
+}
+
+export async function fetchHangman(pairId: string): Promise<HangmanState | null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from('pair_hangman')
+    .select('*')
+    .eq('pair_id', pairId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? rowToHangman(data) : null;
+}
+
+export async function hangmanStart(secret: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.rpc('hangman_start', { secret });
+  if (error) throw new Error(error.message);
+}
+
+export async function hangmanGuess(letter: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.rpc('hangman_guess', { letter });
+  if (error) throw new Error(error.message);
+}
+
+export function onHangmanChange(pairId: string, cb: (h: HangmanState) => void): () => void {
+  if (!supabase) return () => {};
+  return subscribeWithRetry(() =>
+    supabase!
+      .channel(uniqueTopic(`pair-hangman-${pairId}`))
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pair_hangman', filter: `pair_id=eq.${pairId}` },
+        (payload) => {
+          const r = payload.new as { updated_at?: string } | null;
+          if (r && r.updated_at) cb(rowToHangman(r));
+        }
+      )
+  );
+}
+
+// ---------- rock paper scissors ----------
+
+function rowToRps(r: any, iAmA: boolean): RpsState {
+  const a = String(r.choice_a ?? '');
+  const b = String(r.choice_b ?? '');
+  return {
+    myChoicePending: iAmA ? a !== '' : b !== '',
+    theirChoicePending: iAmA ? b !== '' : a !== '',
+    lastA: String(r.last_a ?? ''),
+    lastB: String(r.last_b ?? ''),
+    lastResult: ['a', 'b', 'draw'].includes(r.last_result) ? r.last_result : '',
+    winsA: Number(r.wins_a) || 0,
+    winsB: Number(r.wins_b) || 0,
+    draws: Number(r.draws) || 0,
+    updatedAt: r.updated_at ? Date.parse(r.updated_at) : Date.now(),
+  };
+}
+
+export async function fetchRps(pairId: string, iAmA: boolean): Promise<RpsState | null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from('pair_rps')
+    .select('*')
+    .eq('pair_id', pairId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? rowToRps(data, iAmA) : null;
+}
+
+export async function rpsPlay(choice: 'rock' | 'paper' | 'scissors'): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.rpc('rps_play', { choice });
+  if (error) throw new Error(error.message);
+}
+
+export function onRpsChange(pairId: string, iAmA: boolean, cb: (r: RpsState) => void): () => void {
+  if (!supabase) return () => {};
+  return subscribeWithRetry(() =>
+    supabase!
+      .channel(uniqueTopic(`pair-rps-${pairId}`))
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pair_rps', filter: `pair_id=eq.${pairId}` },
+        (payload) => {
+          const r = payload.new as { updated_at?: string } | null;
+          if (r && r.updated_at) cb(rowToRps(r, iAmA));
+        }
       )
   );
 }

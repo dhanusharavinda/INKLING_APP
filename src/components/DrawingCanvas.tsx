@@ -12,7 +12,7 @@ import {
 import Svg, { Path, Rect, Text as SvgText } from 'react-native-svg';
 import { CanvasItem, CanvasText, Stroke } from '../types';
 import { CANVAS_BG, DRAW_SPACE, strokeToPath } from '../drawing';
-import { palette, serif } from '../theme';
+import { palette, serif, shadeHex, tintHex } from '../theme';
 
 // Cute pastel pens for the shared doodle board.
 const PENS = [
@@ -25,9 +25,25 @@ const PENS = [
   '#8B5E4A', // cocoa
   '#3A3340', // ink
 ];
-const WIDTHS = [2.5, 5, 9];
+const WIDTHS = [1.2, 2.5, 5, 9]; // from fine-liner to marker
 const TEXT_SIZES = [7, 11, 16];
 const ERASER_SCALE = 2.4; // the eraser is a chunky background-colored pen
+
+// Hold a pen to fan out its whole family of shades (Instagram-style).
+function shadesOf(base: string): string[] {
+  return [
+    tintHex(base, 0.82),
+    tintHex(base, 0.65),
+    tintHex(base, 0.48),
+    tintHex(base, 0.32),
+    tintHex(base, 0.16),
+    base,
+    shadeHex(base, 0.14),
+    shadeHex(base, 0.28),
+    shadeHex(base, 0.42),
+    shadeHex(base, 0.58),
+  ];
+}
 
 type Draft = Omit<CanvasText, 'id' | 'author'>;
 
@@ -67,6 +83,7 @@ export default function DrawingCanvas({
   const [textSize, setTextSize] = useState(TEXT_SIZES[1]);
   const [textColor, setTextColor] = useState(PENS[0]);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [shadeBase, setShadeBase] = useState<string | null>(null); // hold a pen
   const pinchRef = useRef<{ d0: number; size0: number } | null>(null);
   // once a gesture has pinched, single-finger moves are ignored until release,
   // so lifting one finger cannot yank the sticker across the page
@@ -263,7 +280,27 @@ export default function DrawingCanvas({
         </View>
       )}
 
-      {/* pens + eraser + text sticker */}
+      {/* hold a pen: its shade family fans out, tap any shade */}
+      {shadeBase && (
+        <View style={styles.shadeStrip}>
+          {shadesOf(shadeBase).map((c) => (
+            <Pressable
+              key={c}
+              onPress={() => {
+                setPen(c);
+                setEraser(false);
+                setShadeBase(null);
+              }}
+              style={[styles.shadeSwatch, { backgroundColor: c }, pen === c && styles.penActive]}
+            />
+          ))}
+          <Pressable onPress={() => setShadeBase(null)} hitSlop={6} style={{ marginLeft: 2 }}>
+            <Text style={{ fontSize: 12, fontWeight: '800', color: palette.inkSoft }}>✕</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* pens + eraser + text sticker (hold a pen for all its shades) */}
       <View style={styles.toolsRow}>
         {PENS.map((c) => (
           <Pressable
@@ -272,6 +309,8 @@ export default function DrawingCanvas({
               setPen(c);
               setEraser(false);
             }}
+            onLongPress={() => setShadeBase(c)}
+            delayLongPress={260}
             style={[styles.pen, { backgroundColor: c }, pen === c && !eraser && styles.penActive]}
           />
         ))}
@@ -438,6 +477,17 @@ const styles = StyleSheet.create({
   },
   cancelDraftText: { color: palette.inkSoft, fontWeight: '800', fontSize: 13 },
   toolsRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
+  shadeStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 10,
+    backgroundColor: palette.bg,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  shadeSwatch: { width: 21, height: 21, borderRadius: 11, borderWidth: 2, borderColor: 'transparent' },
   pen: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: 'transparent' },
   penActive: { borderColor: palette.ink, transform: [{ scale: 1.15 }] },
   toolBtn: {

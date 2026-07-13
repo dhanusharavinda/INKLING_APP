@@ -542,6 +542,8 @@ as $$
 declare
   lines integer[][] := array[[1,2,3],[4,5,6],[7,8,9],[1,4,7],[2,5,8],[3,6,9],[1,5,9],[3,5,7]];
   l integer[];
+  cells text;
+  any_winnable boolean := false;
 begin
   foreach l slice 1 in array lines loop
     if substr(b, l[1], 1) <> '.'
@@ -549,8 +551,14 @@ begin
        and substr(b, l[2], 1) = substr(b, l[3], 1) then
       return substr(b, l[1], 1);
     end if;
+    -- a line is still winnable only if it doesn't contain BOTH symbols
+    cells := substr(b, l[1], 1) || substr(b, l[2], 1) || substr(b, l[3], 1);
+    if not (position('X' in cells) > 0 and position('O' in cells) > 0) then
+      any_winnable := true;
+    end if;
   end loop;
-  if position('.' in b) = 0 then
+  -- full board, or nobody can possibly win anymore: call it early
+  if position('.' in b) = 0 or not any_winnable then
     return 'draw';
   end if;
   return '';
@@ -641,6 +649,273 @@ grant execute on function public.xo_reset() to authenticated;
 do $$
 begin
   alter publication supabase_realtime add table public.pair_xo;
+exception
+  when duplicate_object then null;
+end;
+$$;
+
+-- ---------- snaps: the memories calendar -----------------------------------
+-- A "snap" freezes the doodle page + that day's Daily dose of 💌 so the two
+-- of you can scroll back through a calendar and reminisce.
+
+create table if not exists public.pair_snaps (
+  id         text primary key,
+  pair_id    uuid not null references public.pairs (id) on delete cascade,
+  author     uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  day        text not null,                 -- YYYY-MM-DD (UTC)
+  items      jsonb not null default '[]'::jsonb,
+  question   text not null default '',
+  answers    jsonb,                         -- [{author,text,reaction}] if revealed
+  created_at timestamptz not null default now()
+);
+create index if not exists pair_snaps_pair_day_idx
+  on public.pair_snaps (pair_id, day desc);
+
+alter table public.pair_snaps enable row level security;
+drop policy if exists snaps_select on public.pair_snaps;
+create policy snaps_select on public.pair_snaps
+  for select using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+drop policy if exists snaps_insert on public.pair_snaps;
+create policy snaps_insert on public.pair_snaps
+  for insert with check (
+    author = auth.uid()
+    and exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+drop policy if exists snaps_delete on public.pair_snaps;
+create policy snaps_delete on public.pair_snaps
+  for delete using (author = auth.uid());
+
+-- ---------- hangman: guess my word (petals, not gallows) -------------------
+-- One person plants a secret word; the other guesses letters. Six wrong
+-- guesses and the flower loses all its petals.
+
+create table if not exists public.pair_hangman (
+  pair_id    uuid primary key references public.pairs (id) on delete cascade,
+  setter     uuid,
+  word       text not null default '',
+  guessed    text not null default '',
+  wrongs     integer not null default 0,
+  status     text not null default 'idle',  -- idle | playing | won | lost
+  wins_a     integer not null default 0,
+  wins_b     integer not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.pair_hangman enable row level security;
+drop policy if exists hangman_select on public.pair_hangman;
+create policy hangman_select on public.pair_hangman
+  for select using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+
+create or replace function public.hangman_start(secret text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  pr public.pairs%rowtype;
+  w text := lower(trim(coalesce(secret, '')));
+begin
+  if w !~ '^[a-z]{3,12}$' then
+    raise exception 'Pick a single word, 3 to 12 letters.';
+  end if;
+  select * into pr from public.pairs
+    where user_a = auth.uid() or user_b = auth.uid()
+    limit 1;
+  if pr.id is null then
+    raise exception 'You are not linked with anyone yet.';
+  end if;
+  insert into public.pair_hangman (pair_id) values (pr.id)
+    on conflict (pair_id) do nothing;
+  update public.pair_hangman ph
+    set setter = auth.uid(), word = w, guessed = '', wrongs = 0,
+        status = 'playing', updated_at = now()
+    where ph.pair_id = pr.id and ph.status <> 'playing';
+  if not found then
+    raise exception 'A round is already in play.';
+  end if;
+end;
+$$;
+
+create or replace function public.hangman_guess(letter text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  pr public.pairs%rowtype;
+  h public.pair_hangman%rowtype;
+  ch text := lower(trim(coalesce(letter, '')));
+  i integer;
+  solved boolean := true;
+begin
+  if ch !~ '^[a-z]$' then
+    raise exception 'One letter at a time.';
+  end if;
+  select * into pr from public.pairs
+    where user_a = auth.uid() or user_b = auth.uid()
+    limit 1;
+  if pr.id is null then
+    raise exception 'You are not linked with anyone yet.';
+  end if;
+  select * into h from public.pair_hangman ph where ph.pair_id = pr.id for update;
+  if h.pair_id is null or h.status <> 'playing' then
+    raise exception 'No round in play. Plant a word first!';
+  end if;
+  if h.setter = auth.uid() then
+    raise exception 'You planted the word, they guess it ♡';
+  end if;
+  if position(ch in h.guessed) > 0 then
+    raise exception 'Already tried that letter.';
+  end if;
+
+  h.guessed := h.guessed || ch;
+  if position(ch in h.word) = 0 then
+    h.wrongs := h.wrongs + 1;
+  end if;
+
+  for i in 1..length(h.word) loop
+    if position(substr(h.word, i, 1) in h.guessed) = 0 then
+      solved := false;
+    end if;
+  end loop;
+
+  if solved then
+    h.status := 'won'; -- the guesser got it
+    if pr.user_a = auth.uid() then h.wins_a := h.wins_a + 1; else h.wins_b := h.wins_b + 1; end if;
+  elsif h.wrongs >= 6 then
+    h.status := 'lost'; -- the flower wilted; the setter scores
+    if h.setter = pr.user_a then h.wins_a := h.wins_a + 1; else h.wins_b := h.wins_b + 1; end if;
+  end if;
+
+  update public.pair_hangman ph
+    set guessed = h.guessed, wrongs = h.wrongs, status = h.status,
+        wins_a = h.wins_a, wins_b = h.wins_b, updated_at = now()
+    where ph.pair_id = pr.id;
+end;
+$$;
+
+revoke all on function public.hangman_start(text) from public;
+revoke all on function public.hangman_guess(text) from public;
+grant execute on function public.hangman_start(text) to authenticated;
+grant execute on function public.hangman_guess(text) to authenticated;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.pair_hangman;
+exception
+  when duplicate_object then null;
+end;
+$$;
+
+-- ---------- rock paper scissors: pick in secret, reveal together -----------
+
+create table if not exists public.pair_rps (
+  pair_id     uuid primary key references public.pairs (id) on delete cascade,
+  choice_a    text not null default '',
+  choice_b    text not null default '',
+  last_a      text not null default '',
+  last_b      text not null default '',
+  last_result text not null default '',   -- 'a' | 'b' | 'draw' | ''
+  wins_a      integer not null default 0,
+  wins_b      integer not null default 0,
+  draws       integer not null default 0,
+  updated_at  timestamptz not null default now()
+);
+
+alter table public.pair_rps enable row level security;
+drop policy if exists rps_select on public.pair_rps;
+create policy rps_select on public.pair_rps
+  for select using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+
+create or replace function public.rps_play(choice text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  pr public.pairs%rowtype;
+  r public.pair_rps%rowtype;
+  c text := lower(trim(coalesce(choice, '')));
+  beats boolean;
+begin
+  if c not in ('rock', 'paper', 'scissors') then
+    raise exception 'Rock, paper, or scissors only.';
+  end if;
+  select * into pr from public.pairs
+    where user_a = auth.uid() or user_b = auth.uid()
+    limit 1;
+  if pr.id is null then
+    raise exception 'You are not linked with anyone yet.';
+  end if;
+  insert into public.pair_rps (pair_id) values (pr.id)
+    on conflict (pair_id) do nothing;
+  select * into r from public.pair_rps px where px.pair_id = pr.id for update;
+
+  if pr.user_a = auth.uid() then
+    if r.choice_a <> '' then raise exception 'You already chose, waiting for them ♡'; end if;
+    r.choice_a := c;
+  else
+    if r.choice_b <> '' then raise exception 'You already chose, waiting for them ♡'; end if;
+    r.choice_b := c;
+  end if;
+
+  if r.choice_a <> '' and r.choice_b <> '' then
+    r.last_a := r.choice_a;
+    r.last_b := r.choice_b;
+    if r.choice_a = r.choice_b then
+      r.last_result := 'draw';
+      r.draws := r.draws + 1;
+    else
+      beats := (r.choice_a = 'rock' and r.choice_b = 'scissors')
+            or (r.choice_a = 'paper' and r.choice_b = 'rock')
+            or (r.choice_a = 'scissors' and r.choice_b = 'paper');
+      if beats then
+        r.last_result := 'a';
+        r.wins_a := r.wins_a + 1;
+      else
+        r.last_result := 'b';
+        r.wins_b := r.wins_b + 1;
+      end if;
+    end if;
+    r.choice_a := '';
+    r.choice_b := '';
+  end if;
+
+  update public.pair_rps px
+    set choice_a = r.choice_a, choice_b = r.choice_b, last_a = r.last_a,
+        last_b = r.last_b, last_result = r.last_result, wins_a = r.wins_a,
+        wins_b = r.wins_b, draws = r.draws, updated_at = now()
+    where px.pair_id = pr.id;
+end;
+$$;
+
+revoke all on function public.rps_play(text) from public;
+grant execute on function public.rps_play(text) to authenticated;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.pair_rps;
 exception
   when duplicate_object then null;
 end;

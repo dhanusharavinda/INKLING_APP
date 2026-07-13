@@ -141,6 +141,42 @@ export interface PairAnswer {
   createdAt: number;
 }
 
+// A frozen memory: the doodle page + that day's Daily dose of 💌.
+export interface PairSnap {
+  id: string;
+  author: string;
+  day: string; // YYYY-MM-DD (UTC)
+  items: CanvasItem[];
+  question: string;
+  answers: { author: string; text: string; reaction: string }[] | null;
+  createdAt: number;
+}
+
+// Hangman: one plants a word, the other guesses; 6 wrongs wilts the flower.
+export interface HangmanState {
+  setter: string | null;
+  word: string; // hidden in the UI from the guesser while playing
+  guessed: string; // letters tried, in order
+  wrongs: number;
+  status: 'idle' | 'playing' | 'won' | 'lost';
+  winsA: number;
+  winsB: number;
+  updatedAt: number;
+}
+
+// Rock paper scissors: choose in secret, reveal together.
+export interface RpsState {
+  myChoicePending: boolean; // I picked, waiting on them
+  theirChoicePending: boolean;
+  lastA: string;
+  lastB: string;
+  lastResult: '' | 'a' | 'b' | 'draw';
+  winsA: number;
+  winsB: number;
+  draws: number;
+  updatedAt: number;
+}
+
 export interface PairInfo {
   id: string;
   code: string;

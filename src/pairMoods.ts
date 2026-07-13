@@ -16,6 +16,7 @@ export const PAIR_MOODS: PairMood[] = [
   { key: 'tired', emoji: '🥱', label: 'tired', feels: 'feels tired' },
   { key: 'mishing', emoji: '🥺', label: 'mishing you', feels: 'is mishing you' },
   { key: 'cuteagg', emoji: '😤', label: 'cute aggression', feels: 'wants to squish you' },
+  { key: 'productive', emoji: '💪', label: 'productive', feels: 'is on a productive streak' },
   { key: 'sadness', emoji: '💧', label: 'sad', feels: 'feels sad' },
   { key: 'anger', emoji: '🔥', label: 'grumpy', feels: 'feels grumpy' },
 ];
@@ -80,6 +81,12 @@ const REACTIONS_BY_MOOD: Record<string, ReactionDef[]> = {
     R('fight', '🥊', 'play fight', 'play fighting'),
     R('bite', '🍪', 'offer a cookie instead', 'sharing cookies'),
     POKE,
+  ],
+  productive: [
+    R('cheer', '📣', 'cheer them on', 'on a roll together'),
+    R('coffee', '☕', 'send coffee', 'on a coffee break together'),
+    PROUD,
+    R('grind', '🤝', 'grind together', 'grinding together'),
   ],
   sadness: [HUG, OKAY, HERE, CHOCO, BLANKET],
   anger: [CHILL, HERE, TEA, BREATHE, HUG],

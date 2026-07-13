@@ -15,13 +15,17 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { SvgXml } from 'react-native-svg';
 import {
   CanvasItem,
   CanvasText,
+  HangmanState,
   PairAnswer,
   PairEvent,
   PairGameState,
   PairInfo,
+  PairSnap,
+  RpsState,
   Stroke,
   XoState,
 } from '../types';
@@ -45,14 +49,26 @@ import {
   onAnswersChange,
   onCanvasChange,
   onGameChange,
+  deleteSnap,
+  fetchHangman,
+  fetchRps,
+  fetchSnaps,
+  hangmanGuess,
+  hangmanStart,
+  onHangmanChange,
   onPairEvent,
+  onRpsChange,
   onXoChange,
+  rpsPlay,
+  saveSnap,
   sendPairEvent,
   setAnswerReaction,
   submitAnswer,
   xoMove,
   xoReset,
 } from '../cloud';
+import { itemsToSvg } from '../drawing';
+import { vanGoghify } from '../aiArt';
 import {
   ANSWER_REACTIONS,
   coupleStatusLine,
@@ -90,10 +106,20 @@ import { Button, Card, ProgressBar } from '../components/ui';
 interface Props {
   userId: string;
   myName: string;
+  apiKey: string;
   cloudEnabled: boolean;
 }
 
-type SubTab = 'doodle' | 'together' | 'quest' | 'xo';
+type SubTab = 'doodle' | 'together' | 'quest' | 'games' | 'mem';
+type GameTab = 'xo' | 'hang' | 'rps';
+
+const ALPHABET = 'abcdefghijklmnopqrstuvwxyz'.split('');
+const RPS_META: { key: 'rock' | 'paper' | 'scissors'; emoji: string }[] = [
+  { key: 'rock', emoji: '🪨' },
+  { key: 'paper', emoji: '📄' },
+  { key: 'scissors', emoji: '✂️' },
+];
+const rpsEmoji = (k: string) => RPS_META.find((r) => r.key === k)?.emoji ?? '❔';
 
 function confirmAsk(title: string, message: string, onYes: () => void, yesLabel = 'Yes') {
   if (Platform.OS === 'web') {
@@ -106,7 +132,7 @@ function confirmAsk(title: string, message: string, onYes: () => void, yesLabel 
   ]);
 }
 
-export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
+export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pair, setPair] = useState<PairInfo | null>(null);
@@ -116,10 +142,33 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
   const [moods, setMoods] = useState<PairEvent[]>([]);
   const [game, setGame] = useState<PairGameState | null>(null);
   const [xo, setXo] = useState<XoState | null>(null);
+  const [hangman, setHangman] = useState<HangmanState | null>(null);
+  const [rps, setRps] = useState<RpsState | null>(null);
   const [answers, setAnswers] = useState<PairAnswer[]>([]);
   const [lastReaction, setLastReaction] = useState<PairEvent | null>(null);
   const [lastLink, setLastLink] = useState<PairEvent | null>(null);
   const [subTab, setSubTab] = useState<SubTab>('doodle');
+  const [gameTab, setGameTab] = useState<GameTab>('xo');
+
+  // doodle extras: expand, AI art, snap
+  const [expandOpen, setExpandOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiImage, setAiImage] = useState<string | null>(null);
+  const aiViewRef = useRef<View>(null);
+  const [snapBusy, setSnapBusy] = useState(false);
+
+  // memories calendar
+  const [memMonth, setMemMonth] = useState(() => {
+    const n = new Date();
+    return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), 1));
+  });
+  const [snaps, setSnaps] = useState<PairSnap[]>([]);
+  const [memDay, setMemDay] = useState<string | null>(null);
+
+  // hangman input
+  const [plantWord, setPlantWord] = useState('');
+  const [gameBusy, setGameBusy] = useState(false);
 
   // emoji rain trigger
   const [rain, setRain] = useState<{ emoji: string; key: number }>({ emoji: '', key: 0 });
@@ -156,7 +205,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
       if (p && p.userB) {
         const authorIds = [p.userA, p.userB].filter(Boolean) as string[];
         const today = utcDayKey();
-        const [cs, ms, g, x, ans, lr, ll] = await Promise.all([
+        const amA = p.userA === userId;
+        const [cs, ms, g, x, ans, lr, ll, hm, rp] = await Promise.all([
           fetchCanvas(p.id),
           fetchLatestMoods(p.id, authorIds),
           fetchPairGame(p.id),
@@ -164,6 +214,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
           fetchAnswers(p.id, today),
           fetchLatestEvent(p.id, 'reaction'),
           fetchLatestEvent(p.id, 'link'),
+          fetchHangman(p.id),
+          fetchRps(p.id, amA),
         ]);
         setItems(cs);
         setMoods(ms);
@@ -172,6 +224,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
         setAnswers(ans);
         setLastReaction(lr);
         setLastLink(ll);
+        setHangman(hm);
+        setRps(rp);
       } else {
         setItems([]);
         setMoods([]);
@@ -180,6 +234,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
         setAnswers([]);
         setLastReaction(null);
         setLastLink(null);
+        setHangman(null);
+        setRps(null);
       }
     } catch (e) {
       setError(friendlyCloudError(e));
@@ -233,7 +289,7 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
       pollBusy.current = true;
       try {
         const today = utcDayKey();
-        const [cs, ms, g, x, ans, lr, ll] = await Promise.all([
+        const [cs, ms, g, x, ans, lr, ll, hm, rp] = await Promise.all([
           fetchCanvas(pair.id),
           fetchLatestMoods(pair.id, authorIds),
           fetchPairGame(pair.id),
@@ -241,6 +297,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
           fetchAnswers(pair.id, today),
           fetchLatestEvent(pair.id, 'reaction'),
           fetchLatestEvent(pair.id, 'link'),
+          fetchHangman(pair.id),
+          fetchRps(pair.id, pair.userA === userId),
         ]);
         if (inFlightItems.current === 0) {
           setItems((prev) =>
@@ -267,6 +325,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
           );
         }
         setXo((prev) => (prev && x && prev.updatedAt >= x.updatedAt ? prev : x));
+        setHangman((prev) => (prev && hm && prev.updatedAt >= hm.updatedAt ? prev : hm));
+        setRps((prev) => (prev && rp && prev.updatedAt >= rp.updatedAt ? prev : rp));
         setAnswers((prev) => {
           const key = (list: PairAnswer[]) =>
             list.map((a) => `${a.author}:${a.text}:${a.reaction}`).sort().join('|');
@@ -312,6 +372,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
     });
     const offGame = onGameChange(pair.id, (g) => setGame(g));
     const offXo = onXoChange(pair.id, (x) => setXo(x));
+    const offHang = onHangmanChange(pair.id, (h) => setHangman(h));
+    const offRps = onRpsChange(pair.id, pair.userA === userId, (r) => setRps(r));
     const offAns = onAnswersChange(pair.id, () => {
       fetchAnswers(pair.id, utcDayKey())
         .then(setAnswers)
@@ -322,6 +384,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
       offEvents();
       offGame();
       offXo();
+      offHang();
+      offRps();
       offAns();
     };
   }, [pair, userId, pour]);
@@ -668,6 +732,136 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
     }
   }
 
+  // ---------- snap: freeze this page + today's 💌 into the calendar ----------
+
+  async function handleSnap() {
+    if (!pair || snapBusy || items.length === 0) return;
+    setSnapBusy(true);
+    try {
+      const bothAnswered = myAnswer && theirAnswer;
+      await saveSnap(pair.id, {
+        id: makeId(),
+        author: userId,
+        day: utcDayKey(),
+        items,
+        question,
+        answers: bothAnswered
+          ? [myAnswer, theirAnswer].map((a) => ({
+              author: a!.author,
+              text: a!.text,
+              reaction: a!.reaction,
+            }))
+          : null,
+        createdAt: Date.now(),
+      });
+      pour('📸');
+      if (memMonth.toISOString().slice(0, 7) === utcDayKey().slice(0, 7)) {
+        fetchSnaps(pair.id, utcDayKey().slice(0, 7)).then(setSnaps).catch(() => {});
+      }
+    } catch (e) {
+      setError(friendlyCloudError(e));
+    } finally {
+      setSnapBusy(false);
+    }
+  }
+
+  // ---------- memories calendar ----------
+
+  const memPrefix = memMonth.toISOString().slice(0, 7); // YYYY-MM
+  useEffect(() => {
+    if (!pair || !pair.userB || subTab !== 'mem') return;
+    fetchSnaps(pair.id, memPrefix)
+      .then(setSnaps)
+      .catch((e) => setError(friendlyCloudError(e)));
+  }, [pair, subTab, memPrefix]);
+
+  const snapDays = useMemo(() => new Set(snaps.map((s) => s.day)), [snaps]);
+  const moveMemMonth = (delta: number) => {
+    setMemDay(null);
+    setMemMonth((m) => new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + delta, 1)));
+  };
+
+  async function handleDeleteSnap(id: string) {
+    setSnaps((prev) => prev.filter((s) => s.id !== id));
+    try {
+      await deleteSnap(id);
+    } catch (e) {
+      setError(friendlyCloudError(e));
+    }
+  }
+
+  // ---------- AI art (Van Gogh mode) ----------
+
+  async function handleAiRepaint() {
+    if (aiBusy) return;
+    if (!apiKey.trim()) {
+      setError('AI art needs your OpenAI key: add it in Settings first.');
+      setAiOpen(false);
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const img = await vanGoghify({ apiKey: apiKey.trim(), items, viewRef: aiViewRef.current });
+      setAiImage(img);
+    } catch (e) {
+      setError(friendlyCloudError(e));
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  // ---------- hangman ----------
+
+  async function handlePlantWord() {
+    const w = plantWord.trim().toLowerCase();
+    if (!pair || gameBusy || !/^[a-z]{3,12}$/.test(w)) {
+      if (w) setError('One word, 3 to 12 letters, no spaces.');
+      return;
+    }
+    setGameBusy(true);
+    try {
+      await hangmanStart(w);
+      setPlantWord('');
+      const fresh = await fetchHangman(pair.id);
+      setHangman(fresh);
+    } catch (e) {
+      setError(friendlyCloudError(e));
+    } finally {
+      setGameBusy(false);
+    }
+  }
+
+  async function handleGuess(letter: string) {
+    if (!pair || gameBusy) return;
+    setGameBusy(true);
+    try {
+      await hangmanGuess(letter);
+      const fresh = await fetchHangman(pair.id);
+      setHangman(fresh);
+      if (fresh?.status === 'won') pour('🎉');
+    } catch (e) {
+      setError(friendlyCloudError(e));
+    } finally {
+      setGameBusy(false);
+    }
+  }
+
+  // ---------- rock paper scissors ----------
+
+  async function handleRps(choice: 'rock' | 'paper' | 'scissors') {
+    if (!pair || gameBusy || rps?.myChoicePending) return;
+    setGameBusy(true);
+    try {
+      await rpsPlay(choice);
+      const fresh = await fetchRps(pair.id, iAmA);
+      setRps(fresh);
+    } catch (e) {
+      setError(friendlyCloudError(e));
+    } finally {
+      setGameBusy(false);
+    }
+  }
+
   // ---------- render ----------
 
   if (!cloudEnabled) {
@@ -875,8 +1069,9 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
                 [
                   { key: 'doodle', label: '🎨' },
                   { key: 'together', label: '🐦' },
-                  { key: 'quest', label: '💬' },
-                  { key: 'xo', label: '🎮' },
+                  { key: 'quest', label: '💌' },
+                  { key: 'games', label: '🎮' },
+                  { key: 'mem', label: '📆' },
                 ] as { key: SubTab; label: string }[]
               ).map((t) => (
                 <Pressable
@@ -891,6 +1086,27 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
 
             {subTab === 'doodle' && (
               <Card style={{ marginTop: 10 }}>
+                <View style={styles.canvasToolbar}>
+                  <Pressable onPress={() => setExpandOpen(true)} style={styles.canvasToolBtn}>
+                    <Text style={styles.canvasToolText}>⛶ expand</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      setAiImage(null);
+                      setAiOpen(true);
+                    }}
+                    style={styles.canvasToolBtn}
+                  >
+                    <Text style={styles.canvasToolText}>✨ AI art</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleSnap}
+                    style={[styles.canvasToolBtn, (snapBusy || items.length === 0) && { opacity: 0.5 }]}
+                    disabled={snapBusy || items.length === 0}
+                  >
+                    <Text style={styles.canvasToolText}>{snapBusy ? '…' : '📸 snap'}</Text>
+                  </Pressable>
+                </View>
                 <DrawingCanvas
                   items={items}
                   onStroke={handleStroke}
@@ -902,8 +1118,8 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
                   canClear={items.length > 0}
                 />
                 <Text style={styles.canvasHint}>
-                  You both draw on this same page. Lines and stickers appear on {partnerName}'s
-                  screen and widget as you place them.
+                  You both draw on this same page. 📸 snap saves it (with today's 💌) into your
+                  memories calendar.
                 </Text>
               </Card>
             )}
@@ -960,7 +1176,7 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
 
             {subTab === 'quest' && (
               <Card style={{ marginTop: 10 }}>
-                <Text style={styles.questKicker}>today's question</Text>
+                <Text style={styles.questKicker}>daily dose of 💌</Text>
                 <Text style={styles.questQuestion}>{question}</Text>
                 {!myAnswer ? (
                   <>
@@ -1030,7 +1246,34 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
               </Card>
             )}
 
-            {subTab === 'xo' && (
+            {subTab === 'games' && (
+              <View style={styles.gameSwitch}>
+                {(
+                  [
+                    { key: 'xo', label: '💗⭐ XO' },
+                    { key: 'hang', label: '🌸 hangman' },
+                    { key: 'rps', label: '✂️ r·p·s' },
+                  ] as { key: GameTab; label: string }[]
+                ).map((t) => (
+                  <Pressable
+                    key={t.key}
+                    onPress={() => setGameTab(t.key)}
+                    style={[styles.gameSwitchBtn, gameTab === t.key && styles.gameSwitchBtnActive]}
+                  >
+                    <Text
+                      style={[
+                        styles.gameSwitchText,
+                        gameTab === t.key && { color: palette.ink },
+                      ]}
+                    >
+                      {t.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {subTab === 'games' && gameTab === 'xo' && (
               <Card style={{ marginTop: 10, alignItems: 'center' }}>
                 <Text style={styles.xoScore}>
                   you ({iAmA ? '💗' : '⭐'}) {iAmA ? xo?.winsA ?? 0 : xo?.winsB ?? 0} ·{' '}
@@ -1083,6 +1326,216 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
                 )}
               </Card>
             )}
+
+            {subTab === 'games' && gameTab === 'hang' && (
+              <Card style={{ marginTop: 10, alignItems: 'center' }}>
+                <Text style={styles.xoScore}>
+                  you {iAmA ? hangman?.winsA ?? 0 : hangman?.winsB ?? 0} · {partnerName}{' '}
+                  {iAmA ? hangman?.winsB ?? 0 : hangman?.winsA ?? 0}
+                </Text>
+                {hangman?.status !== 'playing' ? (
+                  <>
+                    {(hangman?.status === 'won' || hangman?.status === 'lost') && (
+                      <Text style={[styles.phrase, { marginTop: 8 }]}>
+                        {hangman.status === 'won' ? 'guessed! 🎉' : 'the flower wilted 🍂'} the word
+                        was “{hangman.word}”
+                      </Text>
+                    )}
+                    <Text style={styles.gameHint}>
+                      plant a secret word and {partnerName} has 6 petals to guess it
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 8, alignSelf: 'stretch', marginTop: 10 }}>
+                      <TextInput
+                        style={[styles.input, { flex: 1 }]}
+                        placeholder="a secret word…"
+                        placeholderTextColor={palette.inkFaint}
+                        value={plantWord}
+                        onChangeText={setPlantWord}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        maxLength={12}
+                        editable={!gameBusy}
+                      />
+                      <Button
+                        label="plant 🌱"
+                        onPress={handlePlantWord}
+                        color="#7FD1BE"
+                        textColor={palette.ink}
+                        disabled={gameBusy || plantWord.trim().length < 3}
+                      />
+                    </View>
+                  </>
+                ) : hangman.setter === userId ? (
+                  <>
+                    <Text style={{ fontSize: 26, marginTop: 8 }}>
+                      {'🌸'.repeat(Math.max(0, 6 - hangman.wrongs))}
+                      {'🍂'.repeat(Math.min(6, hangman.wrongs))}
+                    </Text>
+                    <Text style={styles.hangWord}>
+                      {hangman.word
+                        .split('')
+                        .map((c) => (hangman.guessed.includes(c) ? c : '·'))
+                        .join(' ')}
+                    </Text>
+                    <Text style={styles.gameHint}>
+                      your word is “{hangman.word}” · {partnerName} is guessing… tried:{' '}
+                      {hangman.guessed.split('').join(' ') || 'nothing yet'}
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={{ fontSize: 26, marginTop: 8 }}>
+                      {'🌸'.repeat(Math.max(0, 6 - hangman.wrongs))}
+                      {'🍂'.repeat(Math.min(6, hangman.wrongs))}
+                    </Text>
+                    <Text style={styles.hangWord}>
+                      {hangman.word
+                        .split('')
+                        .map((c) => (hangman.guessed.includes(c) ? c : '_'))
+                        .join(' ')}
+                    </Text>
+                    <View style={styles.alphaGrid}>
+                      {ALPHABET.map((l) => {
+                        const used = hangman.guessed.includes(l);
+                        return (
+                          <Pressable
+                            key={l}
+                            onPress={() => handleGuess(l)}
+                            disabled={used || gameBusy}
+                            style={[styles.alphaKey, used && styles.alphaKeyUsed]}
+                          >
+                            <Text style={[styles.alphaKeyText, used && { color: palette.inkFaint }]}>
+                              {l}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    <Text style={styles.gameHint}>
+                      guess {partnerName}'s word before the flower loses its 6 petals
+                    </Text>
+                  </>
+                )}
+              </Card>
+            )}
+
+            {subTab === 'games' && gameTab === 'rps' && (
+              <Card style={{ marginTop: 10, alignItems: 'center' }}>
+                <Text style={styles.xoScore}>
+                  you {iAmA ? rps?.winsA ?? 0 : rps?.winsB ?? 0} · {partnerName}{' '}
+                  {iAmA ? rps?.winsB ?? 0 : rps?.winsA ?? 0} · draws {rps?.draws ?? 0}
+                </Text>
+                {!!rps?.lastResult && (
+                  <Text style={[styles.phrase, { marginTop: 8 }]}>
+                    {rpsEmoji(iAmA ? rps.lastA : rps.lastB)} vs{' '}
+                    {rpsEmoji(iAmA ? rps.lastB : rps.lastA)} ·{' '}
+                    {rps.lastResult === 'draw'
+                      ? 'a draw 🤝'
+                      : (rps.lastResult === 'a') === iAmA
+                      ? 'you won! 🎀'
+                      : `${partnerName} won 🏆`}
+                  </Text>
+                )}
+                <Text style={styles.gameHint}>
+                  {rps?.myChoicePending
+                    ? `you chose in secret… waiting for ${partnerName} 🤫`
+                    : rps?.theirChoicePending
+                    ? `${partnerName} has chosen! your move…`
+                    : 'both pick in secret, then it reveals'}
+                </Text>
+                <View style={styles.rpsRow}>
+                  {RPS_META.map((r) => (
+                    <Pressable
+                      key={r.key}
+                      onPress={() => handleRps(r.key)}
+                      disabled={gameBusy || !!rps?.myChoicePending}
+                      style={[styles.rpsBtn, rps?.myChoicePending && { opacity: 0.45 }]}
+                    >
+                      <Text style={{ fontSize: 30 }}>{r.emoji}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </Card>
+            )}
+
+            {subTab === 'mem' && (
+              <Card style={{ marginTop: 10 }}>
+                <View style={styles.memHeader}>
+                  <Pressable onPress={() => moveMemMonth(-1)} hitSlop={10}>
+                    <Text style={styles.memArrow}>‹</Text>
+                  </Pressable>
+                  <Text style={styles.memMonth}>
+                    {memMonth.toLocaleDateString([], {
+                      month: 'long',
+                      year: 'numeric',
+                      timeZone: 'UTC',
+                    })}
+                  </Text>
+                  <Pressable onPress={() => moveMemMonth(1)} hitSlop={10}>
+                    <Text style={styles.memArrow}>›</Text>
+                  </Pressable>
+                </View>
+                <View style={styles.memGrid}>
+                  {Array.from({
+                    length: new Date(
+                      Date.UTC(memMonth.getUTCFullYear(), memMonth.getUTCMonth() + 1, 0)
+                    ).getUTCDate(),
+                  }).map((_, i) => {
+                    const dayKey = `${memPrefix}-${String(i + 1).padStart(2, '0')}`;
+                    const has = snapDays.has(dayKey);
+                    return (
+                      <Pressable
+                        key={dayKey}
+                        onPress={() => has && setMemDay(memDay === dayKey ? null : dayKey)}
+                        style={[
+                          styles.memCell,
+                          has && styles.memCellHas,
+                          memDay === dayKey && styles.memCellActive,
+                        ]}
+                      >
+                        <Text style={[styles.memCellText, has && { color: '#D6336C' }]}>
+                          {i + 1}
+                        </Text>
+                        {has && <Text style={{ fontSize: 8 }}>💗</Text>}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {snaps.length === 0 && (
+                  <Text style={styles.gameHint}>
+                    no memories this month yet · 📸 snap the doodle page to keep one forever
+                  </Text>
+                )}
+                {(memDay ? snaps.filter((s) => s.day === memDay) : snaps.slice(0, 3)).map((s) => (
+                  <View key={s.id} style={styles.memSnap}>
+                    <SvgXml xml={itemsToSvg(s.items)} width="100%" height={200} />
+                    <View style={styles.memSnapMeta}>
+                      <Text style={styles.memSnapDay}>
+                        {new Date(`${s.day}T12:00:00Z`).toLocaleDateString([], {
+                          weekday: 'long',
+                          month: 'short',
+                          day: 'numeric',
+                        })}
+                      </Text>
+                      {s.author === userId && (
+                        <Pressable onPress={() => handleDeleteSnap(s.id)} hitSlop={8}>
+                          <Text style={styles.leaveText}>remove</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                    {!!s.question && (
+                      <Text style={styles.memQuestion}>💌 {s.question}</Text>
+                    )}
+                    {s.answers?.map((a) => (
+                      <Text key={a.author} style={styles.memAnswer}>
+                        {a.author === userId ? 'you' : partnerName}: “{a.text}”
+                        {a.reaction ? `  ${a.reaction}` : ''}
+                      </Text>
+                    ))}
+                  </View>
+                ))}
+              </Card>
+            )}
           </>
         )}
 
@@ -1120,6 +1573,75 @@ export default function UsScreen({ userId, myName, cloudEnabled }: Props) {
                 disabled={!linkInput.trim()}
               />
             </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* full-screen doodling */}
+      <Modal
+        visible={expandOpen}
+        animationType="slide"
+        onRequestClose={() => setExpandOpen(false)}
+      >
+        <View style={styles.expandRoot}>
+          <View style={styles.expandHeader}>
+            <Text style={styles.expandTitle}>your shared page ♡</Text>
+            <Pressable onPress={() => setExpandOpen(false)} hitSlop={10}>
+              <Text style={styles.expandClose}>done</Text>
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={{ padding: 16 }}>
+            <DrawingCanvas
+              items={items}
+              onStroke={handleStroke}
+              onText={handleText}
+              onFill={handleFill}
+              onUndo={handleUndo}
+              onClear={handleClear}
+              canUndo={items.some((s) => s.author === userId)}
+              canClear={items.length > 0}
+            />
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* AI art: repaint the page Van Gogh style */}
+      <Modal
+        visible={aiOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAiOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => !aiBusy && setAiOpen(false)}>
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Text style={styles.modalTitle}>✨ Van Gogh mode</Text>
+            <Text style={styles.modalSub}>
+              {aiImage ? 'your doodle, repainted ♡' : 'the AI repaints your page as a tiny masterpiece'}
+            </Text>
+            {aiImage ? (
+              <Image source={{ uri: aiImage }} style={styles.aiImage} resizeMode="cover" />
+            ) : (
+              <View ref={aiViewRef} collapsable={false} style={styles.aiPreview}>
+                <SvgXml xml={itemsToSvg(items)} width="100%" height="100%" />
+              </View>
+            )}
+            <View style={{ marginTop: 12 }}>
+              <Button
+                label={aiBusy ? 'painting… (10-20s)' : aiImage ? '✨ repaint again' : '✨ repaint it'}
+                onPress={handleAiRepaint}
+                color="#9B7EDE"
+                disabled={aiBusy || items.length === 0}
+              />
+            </View>
+            {aiImage && (
+              <Pressable
+                onPress={() => setAiImage(null)}
+                style={{ marginTop: 10, alignItems: 'center' }}
+                hitSlop={6}
+              >
+                <Text style={styles.canvasToolText}>show my sketch</Text>
+              </Pressable>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
@@ -1354,6 +1876,127 @@ const styles = StyleSheet.create({
   answerReactBtnActive: { borderColor: '#F2789F' },
   xoScore: { fontSize: 13, fontWeight: '800', color: palette.inkSoft },
   xoHint: { fontSize: 12.5, fontWeight: '700', color: '#D6336C', marginTop: 6 },
+  canvasToolbar: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  canvasToolBtn: {
+    backgroundColor: palette.bg,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  canvasToolText: { fontSize: 12.5, fontWeight: '800', color: palette.accent },
+  expandRoot: { flex: 1, backgroundColor: palette.bg, paddingTop: 40 },
+  expandHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingBottom: 6,
+  },
+  expandTitle: { fontFamily: serif, fontSize: 20, fontWeight: '700', color: palette.ink },
+  expandClose: { fontSize: 15, fontWeight: '800', color: palette.accent },
+  aiPreview: {
+    width: '100%',
+    aspectRatio: 1,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#FFF7FA',
+    borderWidth: 2,
+    borderColor: '#F6DCE5',
+  },
+  aiImage: { width: '100%', aspectRatio: 1, borderRadius: 16 },
+  gameSwitch: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 10,
+  },
+  gameSwitchBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 999,
+    alignItems: 'center',
+    backgroundColor: palette.line,
+  },
+  gameSwitchBtnActive: { backgroundColor: '#FDE8EF' },
+  gameSwitchText: { fontSize: 12, fontWeight: '800', color: palette.inkSoft },
+  hangWord: {
+    fontFamily: serif,
+    fontSize: 26,
+    fontWeight: '700',
+    letterSpacing: 4,
+    color: palette.ink,
+    marginTop: 10,
+  },
+  alphaGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    justifyContent: 'center',
+    marginTop: 12,
+  },
+  alphaKey: {
+    width: 32,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: palette.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#F6DCE5',
+  },
+  alphaKeyUsed: { backgroundColor: palette.line, borderColor: 'transparent' },
+  alphaKeyText: { fontSize: 15, fontWeight: '800', color: palette.ink },
+  rpsRow: { flexDirection: 'row', gap: 14, marginTop: 14 },
+  rpsBtn: {
+    width: 74,
+    height: 74,
+    borderRadius: 22,
+    backgroundColor: palette.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#F6DCE5',
+  },
+  memHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  memArrow: { fontSize: 22, fontWeight: '800', color: palette.accent },
+  memMonth: { fontSize: 14, fontWeight: '800', color: palette.ink, minWidth: 140, textAlign: 'center' },
+  memGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 12 },
+  memCell: {
+    width: '12.28%',
+    aspectRatio: 0.9,
+    borderRadius: 10,
+    backgroundColor: palette.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  memCellHas: { backgroundColor: '#FDE8EF' },
+  memCellActive: { borderWidth: 2, borderColor: '#F2789F' },
+  memCellText: { fontSize: 11, fontWeight: '700', color: palette.inkSoft },
+  memSnap: {
+    marginTop: 14,
+    backgroundColor: palette.bg,
+    borderRadius: 16,
+    padding: 12,
+  },
+  memSnapMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  memSnapDay: { fontSize: 12.5, fontWeight: '800', color: '#B0688A' },
+  memQuestion: {
+    fontFamily: serif,
+    fontSize: 14.5,
+    fontWeight: '700',
+    color: palette.ink,
+    marginTop: 8,
+  },
+  memAnswer: { fontSize: 13, lineHeight: 19, color: palette.inkSoft, marginTop: 4 },
   xoBoard: {
     flexDirection: 'row',
     flexWrap: 'wrap',
