@@ -85,6 +85,7 @@ export interface CanvasText {
   y: number;
   size: number; // font size in canvas units
   color: string;
+  rotation: number; // degrees, twisted into place with two fingers
 }
 
 // A paint-bucket layer: floods the whole page with a color at its z-order
@@ -96,7 +97,17 @@ export interface CanvasFill {
   color: string;
 }
 
-export type CanvasItem = CanvasStroke | CanvasText | CanvasFill;
+// The bucket poured inside a closed drawn outline: the outline's polygon,
+// filled with a color (flat [x1,y1,...] points in the 0..100 square).
+export interface CanvasShape {
+  kind: 'shape';
+  id: string;
+  author: string;
+  color: string;
+  points: number[];
+}
+
+export type CanvasItem = CanvasStroke | CanvasText | CanvasFill | CanvasShape;
 
 // A mood ("I'm feeling joy"), a comfort reaction, or a shared link.
 export interface PairEvent {
@@ -141,6 +152,16 @@ export interface PairAnswer {
   createdAt: number;
 }
 
+// One little message in the Daily dose of 💌 stream: an affirmation, a
+// reassurance, anything — sent freely, never sealed.
+export interface LoveNote {
+  id: string;
+  author: string;
+  text: string;
+  reaction: string; // the partner's emoji on this note, '' if none
+  createdAt: number;
+}
+
 // A frozen memory: the doodle page + that day's Daily dose of 💌.
 export interface PairSnap {
   id: string;
@@ -149,6 +170,7 @@ export interface PairSnap {
   items: CanvasItem[];
   question: string;
   answers: { author: string; text: string; reaction: string }[] | null;
+  art: string | null; // ✨ Van Gogh repaint (PNG data URI), if one was made
   createdAt: number;
 }
 
@@ -184,4 +206,5 @@ export interface PairInfo {
   userB: string | null;
   nameA: string;
   nameB: string;
+  unlinkRequestedBy: string | null; // who asked to unlink; the other confirms
 }

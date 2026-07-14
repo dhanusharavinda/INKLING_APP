@@ -16,11 +16,12 @@ import {
   View,
 } from 'react-native';
 import { SvgXml } from 'react-native-svg';
+import * as ImagePicker from 'expo-image-picker';
 import {
   CanvasItem,
   CanvasText,
   HangmanState,
-  PairAnswer,
+  LoveNote,
   PairEvent,
   PairGameState,
   PairInfo,
@@ -32,23 +33,24 @@ import {
 import { palette, serif, radius } from '../theme';
 import {
   addCanvasItem,
+  cancelUnlink,
   clearCanvas,
   createPair,
   deleteCanvasStroke,
-  fetchAnswers,
+  deleteLoveNote,
   fetchCanvas,
   fetchLatestEvent,
   fetchLatestMoods,
+  fetchLoveNotes,
   fetchMyPair,
   fetchPairGame,
   fetchXo,
   friendlyCloudError,
   gameTap,
   joinPair,
-  leavePair,
-  onAnswersChange,
   onCanvasChange,
   onGameChange,
+  onLoveNotesChange,
   deleteSnap,
   fetchHangman,
   fetchRps,
@@ -59,11 +61,12 @@ import {
   onPairEvent,
   onRpsChange,
   onXoChange,
+  reactToLoveNote,
+  requestUnlink,
   rpsPlay,
   saveSnap,
+  sendLoveNote,
   sendPairEvent,
-  setAnswerReaction,
-  submitAnswer,
   xoMove,
   xoReset,
 } from '../cloud';
@@ -74,7 +77,6 @@ import {
   coupleStatusLine,
   moodMeta,
   PAIR_MOODS,
-  questionForDay,
   reactionMeta,
   reactionsForMood,
 } from '../pairMoods';
@@ -144,19 +146,23 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   const [xo, setXo] = useState<XoState | null>(null);
   const [hangman, setHangman] = useState<HangmanState | null>(null);
   const [rps, setRps] = useState<RpsState | null>(null);
-  const [answers, setAnswers] = useState<PairAnswer[]>([]);
+  const [notes, setNotes] = useState<LoveNote[]>([]);
   const [lastReaction, setLastReaction] = useState<PairEvent | null>(null);
   const [lastLink, setLastLink] = useState<PairEvent | null>(null);
   const [subTab, setSubTab] = useState<SubTab>('doodle');
   const [gameTab, setGameTab] = useState<GameTab>('xo');
 
-  // doodle extras: expand, AI art, snap
+  // doodle extras: expand, AI art, snap, redo
   const [expandOpen, setExpandOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiImage, setAiImage] = useState<string | null>(null);
+  const [artView, setArtView] = useState(false); // painting shown on the doodle card
   const aiViewRef = useRef<View>(null);
   const [snapBusy, setSnapBusy] = useState(false);
+  const [snapHint, setSnapHint] = useState<string | null>(null);
+  const snapHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [redoStack, setRedoStack] = useState<CanvasItem[]>([]);
 
   // memories calendar
   const [memMonth, setMemMonth] = useState(() => {
@@ -204,14 +210,13 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       setPair(p);
       if (p && p.userB) {
         const authorIds = [p.userA, p.userB].filter(Boolean) as string[];
-        const today = utcDayKey();
         const amA = p.userA === userId;
-        const [cs, ms, g, x, ans, lr, ll, hm, rp] = await Promise.all([
+        const [cs, ms, g, x, ns, lr, ll, hm, rp] = await Promise.all([
           fetchCanvas(p.id),
           fetchLatestMoods(p.id, authorIds),
           fetchPairGame(p.id),
           fetchXo(p.id),
-          fetchAnswers(p.id, today),
+          fetchLoveNotes(p.id),
           fetchLatestEvent(p.id, 'reaction'),
           fetchLatestEvent(p.id, 'link'),
           fetchHangman(p.id),
@@ -221,7 +226,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         setMoods(ms);
         setGame(g);
         setXo(x);
-        setAnswers(ans);
+        setNotes(ns);
         setLastReaction(lr);
         setLastLink(ll);
         setHangman(hm);
@@ -231,7 +236,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         setMoods([]);
         setGame(null);
         setXo(null);
-        setAnswers([]);
+        setNotes([]);
         setLastReaction(null);
         setLastLink(null);
         setHangman(null);
@@ -288,18 +293,29 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       if (pollBusy.current || AppState.currentState !== 'active') return;
       pollBusy.current = true;
       try {
-        const today = utcDayKey();
-        const [cs, ms, g, x, ans, lr, ll, hm, rp] = await Promise.all([
+        const [cs, ms, g, x, ns, lr, ll, hm, rp, freshPair] = await Promise.all([
           fetchCanvas(pair.id),
           fetchLatestMoods(pair.id, authorIds),
           fetchPairGame(pair.id),
           fetchXo(pair.id),
-          fetchAnswers(pair.id, today),
+          fetchLoveNotes(pair.id),
           fetchLatestEvent(pair.id, 'reaction'),
           fetchLatestEvent(pair.id, 'link'),
           fetchHangman(pair.id),
           fetchRps(pair.id, pair.userA === userId),
+          fetchMyPair(),
         ]);
+        // unlink requests (and the unlink itself) land through here
+        setPair((prev) => {
+          if (!prev) return prev;
+          if (!freshPair || freshPair.id !== prev.id) return freshPair;
+          return prev.unlinkRequestedBy === freshPair.unlinkRequestedBy &&
+            prev.userB === freshPair.userB &&
+            prev.nameA === freshPair.nameA &&
+            prev.nameB === freshPair.nameB
+            ? prev
+            : freshPair;
+        });
         if (inFlightItems.current === 0) {
           setItems((prev) =>
             prev.length === cs.length &&
@@ -327,10 +343,10 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         setXo((prev) => (prev && x && prev.updatedAt >= x.updatedAt ? prev : x));
         setHangman((prev) => (prev && hm && prev.updatedAt >= hm.updatedAt ? prev : hm));
         setRps((prev) => (prev && rp && prev.updatedAt >= rp.updatedAt ? prev : rp));
-        setAnswers((prev) => {
-          const key = (list: PairAnswer[]) =>
-            list.map((a) => `${a.author}:${a.text}:${a.reaction}`).sort().join('|');
-          return key(prev) === key(ans) ? prev : ans;
+        setNotes((prev) => {
+          const key = (list: LoveNote[]) =>
+            list.map((n) => `${n.id}:${n.reaction}`).join('|');
+          return key(prev) === key(ns) ? prev : ns;
         });
         setLastReaction((prev) => (prev && lr && prev.createdAt >= lr.createdAt ? prev : lr));
         setLastLink((prev) => (prev && ll && prev.createdAt >= ll.createdAt ? prev : ll));
@@ -374,9 +390,9 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     const offXo = onXoChange(pair.id, (x) => setXo(x));
     const offHang = onHangmanChange(pair.id, (h) => setHangman(h));
     const offRps = onRpsChange(pair.id, pair.userA === userId, (r) => setRps(r));
-    const offAns = onAnswersChange(pair.id, () => {
-      fetchAnswers(pair.id, utcDayKey())
-        .then(setAnswers)
+    const offNotes = onLoveNotesChange(pair.id, () => {
+      fetchLoveNotes(pair.id)
+        .then(setNotes)
         .catch(() => {});
     });
     return () => {
@@ -386,9 +402,16 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       offXo();
       offHang();
       offRps();
-      offAns();
+      offNotes();
     };
   }, [pair, userId, pour]);
+
+  // No error should sit on screen forever ("3 to 12 letters", network blips…)
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   // ---------- pairing ----------
 
@@ -423,25 +446,55 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     }
   }
 
+  const clearPairState = useCallback(() => {
+    setPair(null);
+    setItems([]);
+    setMoods([]);
+    setGame(null);
+    setXo(null);
+    setNotes([]);
+    setHangman(null);
+    setRps(null);
+  }, []);
+
+  // Unlinking takes both hearts: the first ask only marks a request, and the
+  // pair is gone only when the other person confirms. A pending invite (no
+  // partner yet) is deleted straight away.
   function handleLeave() {
+    const confirming = !!pair?.unlinkRequestedBy && pair.unlinkRequestedBy !== userId;
     confirmAsk(
-      'Unlink from your person?',
-      'Your shared doodle and progress will be deleted for both of you.',
+      confirming ? `Unlink from ${partnerName}?` : paired ? 'Ask to unlink?' : 'Cancel the invite?',
+      confirming
+        ? 'They asked to unlink. Confirming deletes your shared doodle and progress for both of you.'
+        : paired
+        ? `Nothing is deleted yet: ${partnerName} has to agree before you two are unlinked.`
+        : 'Your invite code will stop working.',
       async () => {
         try {
-          await leavePair();
-          setPair(null);
-          setItems([]);
-          setMoods([]);
-          setGame(null);
-          setXo(null);
-          setAnswers([]);
+          const outcome = await requestUnlink();
+          if (outcome === 'requested') {
+            const fresh = await fetchMyPair();
+            setPair(fresh);
+          } else {
+            clearPairState();
+          }
         } catch (e) {
           setError(friendlyCloudError(e));
         }
       },
-      'Unlink'
+      confirming ? 'Unlink' : paired ? 'Ask to unlink' : 'Cancel invite'
     );
+  }
+
+  async function handleKeepUs() {
+    try {
+      await cancelUnlink();
+      const fresh = await fetchMyPair();
+      setPair(fresh);
+      pour('💗');
+    } catch (e) {
+      setError(friendlyCloudError(e));
+    }
   }
 
   // ---------- canvas ----------
@@ -460,23 +513,42 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     }
   }
 
-  const handleStroke = (s: Stroke) =>
+  const handleStroke = (s: Stroke) => {
+    setRedoStack([]);
     commitItem({ ...s, kind: 'stroke', id: makeId(), author: userId });
-  const handleText = (t: Omit<CanvasText, 'id' | 'author'>) =>
+  };
+  const handleText = (t: Omit<CanvasText, 'id' | 'author'>) => {
+    setRedoStack([]);
     commitItem({ ...t, id: makeId(), author: userId });
-  const handleFill = (color: string) =>
+  };
+  const handleFill = (color: string) => {
+    setRedoStack([]);
     commitItem({ kind: 'fill', id: makeId(), author: userId, color });
+  };
+  const handleShape = (points: number[], color: string) => {
+    setRedoStack([]);
+    commitItem({ kind: 'shape', id: makeId(), author: userId, color, points });
+  };
 
   async function handleUndo() {
     const mine = [...items].reverse().find((s) => s.author === userId);
     if (!mine) return;
     setItems((prev) => prev.filter((x) => x.id !== mine.id));
+    setRedoStack((prev) => [...prev, mine]);
     try {
       await deleteCanvasStroke(mine.id);
     } catch (e) {
       setItems((prev) => (prev.some((x) => x.id === mine.id) ? prev : [...prev, mine]));
+      setRedoStack((prev) => prev.filter((x) => x.id !== mine.id));
       setError(friendlyCloudError(e));
     }
+  }
+
+  async function handleRedo() {
+    const back = redoStack[redoStack.length - 1];
+    if (!back) return;
+    setRedoStack((prev) => prev.slice(0, -1));
+    await commitItem(back);
   }
 
   function handleClear() {
@@ -487,6 +559,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         snapshot = prev;
         return [];
       });
+      setRedoStack([]);
       try {
         await clearCanvas(pair.id);
       } catch (e) {
@@ -696,37 +769,51 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     }
   }
 
-  // ---------- daily question ----------
+  // ---------- Daily dose of 💌: free little messages, never sealed ----------
 
   const today = utcDayKey();
-  const question = pair ? questionForDay(pair.id, today) : '';
-  const myAnswer = answers.find((a) => a.author === userId);
-  const theirAnswer = answers.find((a) => a.author !== userId);
 
-  async function handleSubmitAnswer() {
+  async function handleSendNote() {
     const text = answerInput.trim();
     if (!pair || !text || answerBusy) return;
     setAnswerBusy(true);
+    const note: LoveNote = {
+      id: makeId(),
+      author: userId,
+      text: text.slice(0, 500),
+      reaction: '',
+      createdAt: Date.now(),
+    };
+    setNotes((prev) => [note, ...prev]);
+    setAnswerInput('');
     try {
-      await submitAnswer(pair.id, today, userId, text.slice(0, 500));
-      setAnswerInput('');
-      const fresh = await fetchAnswers(pair.id, today);
-      setAnswers(fresh);
+      await sendLoveNote(pair.id, userId, note.text, note.id);
+      pour('💌');
     } catch (e) {
+      setNotes((prev) => prev.filter((n) => n.id !== note.id));
+      setAnswerInput(text);
       setError(friendlyCloudError(e));
     } finally {
       setAnswerBusy(false);
     }
   }
 
-  async function handleAnswerReaction(emoji: string) {
-    if (!pair || !myAnswer) return;
-    const next = myAnswer.reaction === emoji ? '' : emoji;
-    setAnswers((prev) =>
-      prev.map((a) => (a.author === userId ? { ...a, reaction: next } : a))
-    );
+  async function handleNoteReaction(note: LoveNote, emoji: string) {
+    if (!pair || note.author === userId) return;
+    const next = note.reaction === emoji ? '' : emoji;
+    setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, reaction: next } : n)));
     try {
-      await setAnswerReaction(pair.id, today, userId, next);
+      await reactToLoveNote(note.id, next);
+    } catch (e) {
+      setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, reaction: note.reaction } : n)));
+      setError(friendlyCloudError(e));
+    }
+  }
+
+  async function handleDeleteNote(id: string) {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await deleteLoveNote(id);
     } catch (e) {
       setError(friendlyCloudError(e));
     }
@@ -735,28 +822,32 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   // ---------- snap: freeze this page + today's 💌 into the calendar ----------
 
   async function handleSnap() {
-    if (!pair || snapBusy || items.length === 0) return;
+    if (!pair || snapBusy || (items.length === 0 && !aiImage)) return;
     setSnapBusy(true);
     try {
-      const bothAnswered = myAnswer && theirAnswer;
+      const todaysNotes = notes.filter((n) => utcDayKey(n.createdAt) === today);
       await saveSnap(pair.id, {
         id: makeId(),
         author: userId,
-        day: utcDayKey(),
+        day: today,
         items,
-        question,
-        answers: bothAnswered
-          ? [myAnswer, theirAnswer].map((a) => ({
-              author: a!.author,
-              text: a!.text,
-              reaction: a!.reaction,
-            }))
-          : null,
+        question: '',
+        answers:
+          todaysNotes.length > 0
+            ? todaysNotes
+                .slice(0, 12)
+                .reverse()
+                .map((n) => ({ author: n.author, text: n.text, reaction: n.reaction }))
+            : null,
+        art: aiImage,
         createdAt: Date.now(),
       });
       pour('📸');
-      if (memMonth.toISOString().slice(0, 7) === utcDayKey().slice(0, 7)) {
-        fetchSnaps(pair.id, utcDayKey().slice(0, 7)).then(setSnaps).catch(() => {});
+      setSnapHint('saved to your 📆 memories ♡');
+      if (snapHintTimer.current) clearTimeout(snapHintTimer.current);
+      snapHintTimer.current = setTimeout(() => setSnapHint(null), 3000);
+      if (memMonth.toISOString().slice(0, 7) === today.slice(0, 7)) {
+        fetchSnaps(pair.id, today.slice(0, 7)).then(setSnaps).catch(() => {});
       }
     } catch (e) {
       setError(friendlyCloudError(e));
@@ -775,7 +866,12 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       .catch((e) => setError(friendlyCloudError(e)));
   }, [pair, subTab, memPrefix]);
 
-  const snapDays = useMemo(() => new Set(snaps.map((s) => s.day)), [snaps]);
+  // several snaps can live on one day; the calendar shows how many
+  const snapCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of snaps) map.set(s.day, (map.get(s.day) ?? 0) + 1);
+    return map;
+  }, [snaps]);
   const moveMemMonth = (delta: number) => {
     setMemDay(null);
     setMemMonth((m) => new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + delta, 1)));
@@ -803,11 +899,48 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     try {
       const img = await vanGoghify({ apiKey: apiKey.trim(), items, viewRef: aiViewRef.current });
       setAiImage(img);
+      setArtView(true); // the painting hangs on the doodle card once the modal closes
     } catch (e) {
       setError(friendlyCloudError(e));
     } finally {
       setAiBusy(false);
     }
+  }
+
+  // ---------- trace: a temporary reference photo to draw over ----------
+
+  async function pickTraceImage(): Promise<{ uri: string; ratio: number } | null> {
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.8,
+    });
+    if (res.canceled || !res.assets?.length) return null;
+    const a = res.assets[0];
+    return { uri: a.uri, ratio: a.width && a.height ? a.width / a.height : 1 };
+  }
+
+  // ---------- little streak celebrations ----------
+
+  // null until the first game state lands, so opening the app with the goal
+  // already reached does not rain confetti — only the moment you two hit 100.
+  const prevReached = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!game) return;
+    const now = goalReachedToday(game);
+    if (prevReached.current !== null && now && !prevReached.current) pour('🎉');
+    prevReached.current = now;
+  }, [game, pour]);
+
+  function streakCheer(streakDays: number, reachedToday: boolean): string | null {
+    if (!reachedToday) return null;
+    if (streakDays >= 100) return `${streakDays} days!!! certified soulmates 💯💗`;
+    if (streakDays >= 50 && streakDays % 25 === 0) return `${streakDays} days, frame this love 🖼️`;
+    if (streakDays === 30) return 'a WHOLE month of showing up for each other 🌙💗';
+    if (streakDays === 14) return 'two weeks strong, you two 🕊️';
+    if (streakDays === 7) return 'a whole week of showing up for each other 💗';
+    if (streakDays === 3) return 'three days in a row 🥹 it’s becoming a thing';
+    if (streakDays === 1) return 'day one of your little streak 🌱';
+    return `day ${streakDays} together 🔥 the birds are proud of you`;
   }
 
   // ---------- hangman ----------
@@ -984,10 +1117,31 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                   <Text style={styles.pairTitle}>You + {partnerName}</Text>
                   <Text style={styles.pairSub}>{statusLine ?? 'one shared little world'}</Text>
                 </View>
-                <Pressable onPress={handleLeave} hitSlop={8}>
-                  <Text style={styles.leaveText}>unlink</Text>
-                </Pressable>
+                {!pair.unlinkRequestedBy && (
+                  <Pressable onPress={handleLeave} hitSlop={8}>
+                    <Text style={styles.leaveText}>unlink</Text>
+                  </Pressable>
+                )}
               </View>
+              {!!pair.unlinkRequestedBy && (
+                <View style={styles.unlinkBanner}>
+                  <Text style={styles.unlinkText}>
+                    {pair.unlinkRequestedBy === userId
+                      ? `you asked to unlink 💔 nothing happens until ${partnerName} agrees`
+                      : `${partnerName} asked to unlink 💔 it only happens if you confirm`}
+                  </Text>
+                  <View style={styles.unlinkBtns}>
+                    <Pressable onPress={handleKeepUs} style={styles.keepUsBtn}>
+                      <Text style={styles.keepUsText}>keep us ♡</Text>
+                    </Pressable>
+                    {pair.unlinkRequestedBy !== userId && (
+                      <Pressable onPress={handleLeave} style={styles.confirmUnlinkBtn}>
+                        <Text style={styles.confirmUnlinkText}>confirm unlink</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                </View>
+              )}
               {linkFresh && lastLink && (
                 <Pressable
                   onPress={() => Linking.openURL(lastLink.value).catch(() => {})}
@@ -1090,37 +1244,59 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                   <Pressable onPress={() => setExpandOpen(true)} style={styles.canvasToolBtn}>
                     <Text style={styles.canvasToolText}>⛶ expand</Text>
                   </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      setAiImage(null);
-                      setAiOpen(true);
-                    }}
-                    style={styles.canvasToolBtn}
-                  >
+                  <Pressable onPress={() => setAiOpen(true)} style={styles.canvasToolBtn}>
                     <Text style={styles.canvasToolText}>✨ AI art</Text>
                   </Pressable>
+                  {!!aiImage && (
+                    <Pressable
+                      onPress={() => setArtView((v) => !v)}
+                      style={[styles.canvasToolBtn, artView && styles.canvasToolBtnActive]}
+                    >
+                      <Text style={styles.canvasToolText}>{artView ? '✏️ sketch' : '🖼 painting'}</Text>
+                    </Pressable>
+                  )}
                   <Pressable
                     onPress={handleSnap}
-                    style={[styles.canvasToolBtn, (snapBusy || items.length === 0) && { opacity: 0.5 }]}
-                    disabled={snapBusy || items.length === 0}
+                    style={[
+                      styles.canvasToolBtn,
+                      (snapBusy || (items.length === 0 && !aiImage)) && { opacity: 0.5 },
+                    ]}
+                    disabled={snapBusy || (items.length === 0 && !aiImage)}
                   >
                     <Text style={styles.canvasToolText}>{snapBusy ? '…' : '📸 snap'}</Text>
                   </Pressable>
                 </View>
-                <DrawingCanvas
-                  items={items}
-                  onStroke={handleStroke}
-                  onText={handleText}
-                  onFill={handleFill}
-                  onUndo={handleUndo}
-                  onClear={handleClear}
-                  canUndo={items.some((s) => s.author === userId)}
-                  canClear={items.length > 0}
-                />
-                <Text style={styles.canvasHint}>
-                  You both draw on this same page. 📸 snap saves it (with today's 💌) into your
-                  memories calendar.
-                </Text>
+                {snapHint && <Text style={styles.snapHint}>{snapHint}</Text>}
+                {aiImage && artView ? (
+                  <>
+                    <Image source={{ uri: aiImage }} style={styles.aiImage} resizeMode="cover" />
+                    <Text style={styles.canvasHint}>
+                      your page, repainted ✨ 📸 snap keeps BOTH the painting and the sketch · tap ✏️
+                      sketch to keep drawing
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <DrawingCanvas
+                      items={items}
+                      onStroke={handleStroke}
+                      onText={handleText}
+                      onFill={handleFill}
+                      onShape={handleShape}
+                      onUndo={handleUndo}
+                      onRedo={handleRedo}
+                      onClear={handleClear}
+                      canUndo={items.some((s) => s.author === userId)}
+                      canRedo={redoStack.length > 0}
+                      canClear={items.length > 0}
+                      onPickTraceImage={pickTraceImage}
+                    />
+                    <Text style={styles.canvasHint}>
+                      You both draw on this same page. 📷 traces a photo, 🪣 fills closed shapes, 📸
+                      snap saves it (with today's 💌) into your memories calendar.
+                    </Text>
+                  </>
+                )}
               </Card>
             )}
 
@@ -1146,6 +1322,9 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                 <View style={{ width: '80%', marginTop: 6 }}>
                   <ProgressBar progress={taps / GAME_GOAL} color="#F2789F" height={9} />
                 </View>
+                {!!streakCheer(streak, reached) && (
+                  <Text style={styles.cheerNote}>{streakCheer(streak, reached)}</Text>
+                )}
                 {froze && (
                   <Text style={styles.freezeNote}>
                     ❄️ a streak freeze covered yesterday, your {streak}-day streak is safe
@@ -1177,71 +1356,80 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
             {subTab === 'quest' && (
               <Card style={{ marginTop: 10 }}>
                 <Text style={styles.questKicker}>daily dose of 💌</Text>
-                <Text style={styles.questQuestion}>{question}</Text>
-                {!myAnswer ? (
-                  <>
-                    <TextInput
-                      style={styles.questInput}
-                      placeholder="answer honestly, they can't see it until they answer too…"
-                      placeholderTextColor={palette.inkFaint}
-                      value={answerInput}
-                      onChangeText={setAnswerInput}
-                      multiline
-                      maxLength={500}
-                      editable={!answerBusy}
-                    />
-                    <View style={{ marginTop: 10 }}>
-                      <Button
-                        label={answerBusy ? 'sealing…' : 'seal my answer 💌'}
-                        onPress={handleSubmitAnswer}
-                        color="#F2789F"
-                        disabled={answerBusy || !answerInput.trim()}
-                      />
-                    </View>
-                    <Text style={styles.questHint}>
-                      answers unlock only when you've both written yours, no peeking
-                    </Text>
-                  </>
-                ) : !theirAnswer ? (
-                  <View style={{ alignItems: 'center', paddingVertical: 14 }}>
-                    <Text style={{ fontSize: 30 }}>💌</Text>
-                    <Text style={styles.questWaiting}>
-                      yours is sealed ♡ waiting for {partnerName}…
-                    </Text>
-                    <View style={styles.answerCardMine}>
-                      <Text style={styles.answerAuthor}>you wrote</Text>
-                      <Text style={styles.answerText}>{myAnswer.text}</Text>
-                    </View>
-                  </View>
+                <Text style={styles.questQuestion}>
+                  a little something for {partnerName} ♡
+                </Text>
+                <TextInput
+                  style={styles.questInput}
+                  placeholder="an affirmation, a reassurance, a tiny love letter… anything"
+                  placeholderTextColor={palette.inkFaint}
+                  value={answerInput}
+                  onChangeText={setAnswerInput}
+                  multiline
+                  maxLength={500}
+                  editable={!answerBusy}
+                />
+                <View style={{ marginTop: 10 }}>
+                  <Button
+                    label={answerBusy ? 'sending…' : 'send it 💌'}
+                    onPress={handleSendNote}
+                    color="#F2789F"
+                    disabled={answerBusy || !answerInput.trim()}
+                  />
+                </View>
+                {notes.length === 0 ? (
+                  <Text style={styles.questHint}>
+                    whatever you write lands on {partnerName}'s screen instantly, no sealing, no
+                    waiting ♡
+                  </Text>
                 ) : (
-                  <>
-                    <View style={styles.answerCardTheirs}>
-                      <Text style={styles.answerAuthor}>{partnerName} wrote</Text>
-                      <Text style={styles.answerText}>{theirAnswer.text}</Text>
-                      <View style={styles.answerReactRow}>
-                        {ANSWER_REACTIONS.map((emo) => (
-                          <Pressable
-                            key={emo}
-                            onPress={() => handleAnswerReaction(emo)}
-                            style={[
-                              styles.answerReactBtn,
-                              myAnswer.reaction === emo && styles.answerReactBtnActive,
-                            ]}
-                          >
-                            <Text style={{ fontSize: 17 }}>{emo}</Text>
-                          </Pressable>
-                        ))}
+                  notes.map((n) => {
+                    const mine = n.author === userId;
+                    return (
+                      <View key={n.id} style={mine ? styles.answerCardMine : styles.answerCardTheirs}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Text style={styles.answerAuthor}>
+                            {mine ? 'you' : partnerName} ·{' '}
+                            {new Date(n.createdAt).toLocaleDateString([], {
+                              month: 'short',
+                              day: 'numeric',
+                            })}{' '}
+                            {new Date(n.createdAt).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </Text>
+                          <View style={{ flex: 1 }} />
+                          {mine && (
+                            <Pressable onPress={() => handleDeleteNote(n.id)} hitSlop={8}>
+                              <Text style={styles.leaveText}>remove</Text>
+                            </Pressable>
+                          )}
+                        </View>
+                        <Text style={styles.answerText}>{n.text}</Text>
+                        {mine ? (
+                          !!n.reaction && (
+                            <Text style={styles.noteReactionLine}>they felt it {n.reaction}</Text>
+                          )
+                        ) : (
+                          <View style={styles.answerReactRow}>
+                            {ANSWER_REACTIONS.map((emo) => (
+                              <Pressable
+                                key={emo}
+                                onPress={() => handleNoteReaction(n, emo)}
+                                style={[
+                                  styles.answerReactBtn,
+                                  n.reaction === emo && styles.answerReactBtnActive,
+                                ]}
+                              >
+                                <Text style={{ fontSize: 17 }}>{emo}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        )}
                       </View>
-                    </View>
-                    <View style={styles.answerCardMine}>
-                      <Text style={styles.answerAuthor}>
-                        you wrote{' '}
-                        {theirAnswer.reaction ? `· they reacted ${theirAnswer.reaction}` : ''}
-                      </Text>
-                      <Text style={styles.answerText}>{myAnswer.text}</Text>
-                    </View>
-                    <Text style={styles.questHint}>a new question arrives at midnight (UTC) ✨</Text>
-                  </>
+                    );
+                  })
                 )}
               </Card>
             )}
@@ -1482,7 +1670,8 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                     ).getUTCDate(),
                   }).map((_, i) => {
                     const dayKey = `${memPrefix}-${String(i + 1).padStart(2, '0')}`;
-                    const has = snapDays.has(dayKey);
+                    const count = snapCounts.get(dayKey) ?? 0;
+                    const has = count > 0;
                     return (
                       <Pressable
                         key={dayKey}
@@ -1496,7 +1685,11 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                         <Text style={[styles.memCellText, has && { color: '#D6336C' }]}>
                           {i + 1}
                         </Text>
-                        {has && <Text style={{ fontSize: 8 }}>💗</Text>}
+                        {has && (
+                          <Text style={{ fontSize: 8 }}>
+                            💗{count > 1 ? `×${count}` : ''}
+                          </Text>
+                        )}
                       </Pressable>
                     );
                   })}
@@ -1508,7 +1701,12 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                 )}
                 {(memDay ? snaps.filter((s) => s.day === memDay) : snaps.slice(0, 3)).map((s) => (
                   <View key={s.id} style={styles.memSnap}>
-                    <SvgXml xml={itemsToSvg(s.items)} width="100%" height={200} />
+                    {s.art ? (
+                      <Image source={{ uri: s.art }} style={styles.memArt} resizeMode="cover" />
+                    ) : null}
+                    {s.items.length > 0 && (
+                      <SvgXml xml={itemsToSvg(s.items)} width="100%" height={200} />
+                    )}
                     <View style={styles.memSnapMeta}>
                       <Text style={styles.memSnapDay}>
                         {new Date(`${s.day}T12:00:00Z`).toLocaleDateString([], {
@@ -1596,10 +1794,16 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
               onStroke={handleStroke}
               onText={handleText}
               onFill={handleFill}
+              onShape={handleShape}
               onUndo={handleUndo}
+              onRedo={handleRedo}
               onClear={handleClear}
               canUndo={items.some((s) => s.author === userId)}
+              canRedo={redoStack.length > 0}
               canClear={items.length > 0}
+              bigPalette
+              zoomable
+              onPickTraceImage={pickTraceImage}
             />
           </ScrollView>
         </View>
@@ -1633,14 +1837,28 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                 disabled={aiBusy || items.length === 0}
               />
             </View>
-            {aiImage && (
-              <Pressable
-                onPress={() => setAiImage(null)}
-                style={{ marginTop: 10, alignItems: 'center' }}
-                hitSlop={6}
-              >
-                <Text style={styles.canvasToolText}>show my sketch</Text>
-              </Pressable>
+            {aiImage && !aiBusy && (
+              <View style={{ marginTop: 10 }}>
+                <Button
+                  label="🖼 hang it on our page"
+                  onPress={() => {
+                    setArtView(true);
+                    setAiOpen(false);
+                  }}
+                  color="#7FD1BE"
+                  textColor={palette.ink}
+                />
+                <Pressable
+                  onPress={() => {
+                    setAiImage(null);
+                    setArtView(false);
+                  }}
+                  style={{ marginTop: 10, alignItems: 'center' }}
+                  hitSlop={6}
+                >
+                  <Text style={styles.canvasToolText}>✕ discard the painting</Text>
+                </Pressable>
+              </View>
             )}
           </Pressable>
         </Pressable>
@@ -1876,14 +2094,53 @@ const styles = StyleSheet.create({
   answerReactBtnActive: { borderColor: '#F2789F' },
   xoScore: { fontSize: 13, fontWeight: '800', color: palette.inkSoft },
   xoHint: { fontSize: 12.5, fontWeight: '700', color: '#D6336C', marginTop: 6 },
-  canvasToolbar: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  canvasToolbar: { flexDirection: 'row', gap: 8, marginBottom: 10, flexWrap: 'wrap' },
   canvasToolBtn: {
     backgroundColor: palette.bg,
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
   },
+  canvasToolBtnActive: { backgroundColor: '#FDE8EF', borderWidth: 1.5, borderColor: '#F2789F' },
   canvasToolText: { fontSize: 12.5, fontWeight: '800', color: palette.accent },
+  snapHint: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: '#2F9E44',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  cheerNote: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: '#D6336C',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  noteReactionLine: { fontSize: 12, fontWeight: '700', color: '#B0688A', marginTop: 8 },
+  unlinkBanner: {
+    marginTop: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 12,
+  },
+  unlinkText: { fontSize: 12.5, fontWeight: '700', color: palette.inkSoft, lineHeight: 18 },
+  unlinkBtns: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  keepUsBtn: {
+    backgroundColor: '#F2789F',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  keepUsText: { color: '#fff', fontWeight: '800', fontSize: 12.5 },
+  confirmUnlinkBtn: {
+    backgroundColor: palette.line,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  confirmUnlinkText: { color: palette.inkSoft, fontWeight: '800', fontSize: 12.5 },
+  memArt: { width: '100%', aspectRatio: 1, borderRadius: 12, marginBottom: 8 },
   expandRoot: { flex: 1, backgroundColor: palette.bg, paddingTop: 40 },
   expandHeader: {
     flexDirection: 'row',

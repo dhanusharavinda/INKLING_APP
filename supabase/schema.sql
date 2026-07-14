@@ -112,6 +112,8 @@ create table if not exists public.pairs (
   name_b     text not null default '',
   created_at timestamptz not null default now()
 );
+-- Unlinking needs both hearts: one asks, the other confirms.
+alter table public.pairs add column if not exists unlink_requested_by uuid;
 
 create table if not exists public.shared_notes (
   id          text primary key,
@@ -122,6 +124,8 @@ create table if not exists public.shared_notes (
   drawing     jsonb,               -- array of strokes {color,width,points:[x,y,...]}
   created_at  timestamptz not null default now()
 );
+-- The partner's emoji reaction to this note (Daily dose of 💌 stream).
+alter table public.shared_notes add column if not exists reaction text not null default '';
 create index if not exists shared_notes_pair_idx
   on public.shared_notes (pair_id, created_at desc);
 
@@ -238,12 +242,84 @@ begin
 end;
 $$;
 
+-- Unlinking a COMPLETE pair takes both people: the first call only marks a
+-- request; the pair is deleted when the OTHER person also asks. A pending
+-- invite (no partner yet) is mine alone, so it deletes immediately.
+create or replace function public.request_unlink()
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  p public.pairs%rowtype;
+begin
+  select * into p from public.pairs
+    where user_a = auth.uid() or user_b = auth.uid()
+    for update;
+  if not found then
+    return 'gone';
+  end if;
+  if p.user_b is null then
+    delete from public.pairs where id = p.id;
+    return 'deleted';
+  end if;
+  if p.unlink_requested_by is null or p.unlink_requested_by = auth.uid() then
+    update public.pairs set unlink_requested_by = auth.uid() where id = p.id;
+    return 'requested';
+  end if;
+  -- the other person already asked; my call is the confirmation
+  delete from public.pairs where id = p.id;
+  return 'deleted';
+end;
+$$;
+
+-- Either person can call off a pending unlink ("keep us").
+create or replace function public.cancel_unlink()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.pairs set unlink_requested_by = null
+    where (user_a = auth.uid() or user_b = auth.uid())
+      and unlink_requested_by is not null;
+end;
+$$;
+
+-- React to a note in the Daily dose of 💌 stream (only pair members, and only
+-- to the PARTNER's note; the reaction column is the only thing it can touch).
+create or replace function public.note_react(note_id text, emoji text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.shared_notes n
+    set reaction = left(coalesce(emoji, ''), 8)
+    where n.id = note_id
+      and n.author <> auth.uid()
+      and exists (
+        select 1 from public.pairs p
+        where p.id = n.pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+      );
+end;
+$$;
+
 revoke all on function public.create_pair(text) from public;
 revoke all on function public.join_pair(text, text) from public;
 revoke all on function public.leave_pair() from public;
+revoke all on function public.request_unlink() from public;
+revoke all on function public.cancel_unlink() from public;
+revoke all on function public.note_react(text, text) from public;
 grant execute on function public.create_pair(text) to authenticated;
 grant execute on function public.join_pair(text, text) to authenticated;
 grant execute on function public.leave_pair() to authenticated;
+grant execute on function public.request_unlink() to authenticated;
+grant execute on function public.cancel_unlink() to authenticated;
+grant execute on function public.note_react(text, text) to authenticated;
 
 -- Live sync: notes stream to the partner instantly while the app is open.
 -- Replica identity full lets DELETE events carry the row (so the pair filter
@@ -670,6 +746,8 @@ create table if not exists public.pair_snaps (
 );
 create index if not exists pair_snaps_pair_day_idx
   on public.pair_snaps (pair_id, day desc);
+-- A ✨ Van Gogh repaint of the page, if one was made (PNG data URI).
+alter table public.pair_snaps add column if not exists art text;
 
 alter table public.pair_snaps enable row level security;
 drop policy if exists snaps_select on public.pair_snaps;

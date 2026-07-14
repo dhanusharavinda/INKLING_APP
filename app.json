@@ -35,6 +35,12 @@
       "@react-native-community/datetimepicker",
       "expo-sharing",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Inkling shows a photo of your choice as a ghost image so you can trace it on your shared doodle page."
+        }
+      ],
+      [
         "react-native-android-widget",
         {
           "widgets": [

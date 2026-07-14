@@ -4,6 +4,7 @@ import {
   Entry,
   GameState,
   HangmanState,
+  LoveNote,
   PairAnswer,
   PairEvent,
   PairGameState,
@@ -287,6 +288,7 @@ function rowToPair(r: any): PairInfo {
     userB: r.user_b ?? null,
     nameA: r.name_a ?? '',
     nameB: r.name_b ?? '',
+    unlinkRequestedBy: r.unlink_requested_by ?? null,
   };
 }
 
@@ -305,6 +307,15 @@ function rowToCanvasItem(r: any): CanvasItem {
       color: typeof s.color === 'string' ? s.color : '#FFF7FA',
     };
   }
+  if (s.kind === 'shape') {
+    return {
+      kind: 'shape',
+      id: r.id,
+      author: r.author,
+      color: typeof s.color === 'string' ? s.color : '#F2789F',
+      points: Array.isArray(s.points) ? (s.points as number[]) : [],
+    };
+  }
   if (s.kind === 'text') {
     // Partner rows are untrusted: clamp geometry and cap length on ingestion
     // so the live canvas and the widget render the same, sane thing.
@@ -317,6 +328,7 @@ function rowToCanvasItem(r: any): CanvasItem {
       y: clampNum(s.y, 0, 100, 50),
       size: clampNum(s.size, 3, 40, 9),
       color: typeof s.color === 'string' ? s.color : '#3A3340',
+      rotation: clampNum(s.rotation, -3600, 3600, 0),
     };
   }
   return {
@@ -371,6 +383,22 @@ export async function leavePair(): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+// Ask to unlink. 'requested' means the partner still has to agree;
+// 'deleted' means the pair is gone (they had already asked, or it was a
+// pending invite with no partner yet).
+export async function requestUnlink(): Promise<'requested' | 'deleted' | 'gone'> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { data, error } = await supabase.rpc('request_unlink');
+  if (error) throw new Error(error.message);
+  return data === 'deleted' || data === 'gone' ? data : 'requested';
+}
+
+export async function cancelUnlink(): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.rpc('cancel_unlink');
+  if (error) throw new Error(error.message);
+}
+
 // ---------- shared canvas ----------
 
 export async function fetchCanvas(pairId: string, limit = 1200): Promise<CanvasItem[]> {
@@ -389,9 +417,19 @@ export async function addCanvasItem(pairId: string, item: CanvasItem): Promise<v
   if (!supabase) throw new Error('Cloud is not configured.');
   const payload =
     item.kind === 'text'
-      ? { kind: 'text', text: item.text, x: item.x, y: item.y, size: item.size, color: item.color }
+      ? {
+          kind: 'text',
+          text: item.text,
+          x: item.x,
+          y: item.y,
+          size: item.size,
+          color: item.color,
+          rotation: item.rotation,
+        }
       : item.kind === 'fill'
       ? { kind: 'fill', color: item.color }
+      : item.kind === 'shape'
+      ? { kind: 'shape', color: item.color, points: item.points }
       : { color: item.color, width: item.width, points: item.points };
   const { error } = await supabase.from('canvas_strokes').insert({
     id: item.id,
@@ -732,9 +770,81 @@ export function onAnswersChange(pairId: string, cb: () => void): () => void {
   );
 }
 
+// ---------- Daily dose of 💌: a free little message stream ----------
+
+function rowToNote(r: any): LoveNote {
+  return {
+    id: String(r.id ?? ''),
+    author: String(r.author ?? ''),
+    text: String(r.text ?? ''),
+    reaction: String(r.reaction ?? ''),
+    createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
+  };
+}
+
+// The most recent notes, newest first.
+export async function fetchLoveNotes(pairId: string, limit = 30): Promise<LoveNote[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('shared_notes')
+    .select('*')
+    .eq('pair_id', pairId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+  return (data ?? []).map(rowToNote);
+}
+
+export async function sendLoveNote(
+  pairId: string,
+  author: string,
+  text: string,
+  id: string
+): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.from('shared_notes').insert({
+    id,
+    pair_id: pairId,
+    author,
+    text,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteLoveNote(id: string): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.from('shared_notes').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+// React to the PARTNER's note (the database refuses reactions to my own).
+export async function reactToLoveNote(noteId: string, emoji: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.rpc('note_react', { note_id: noteId, emoji });
+  if (error) throw new Error(error.message);
+}
+
+export function onLoveNotesChange(pairId: string, cb: () => void): () => void {
+  if (!supabase) return () => {};
+  return subscribeWithRetry(() =>
+    supabase!
+      .channel(uniqueTopic(`love-notes-${pairId}`))
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'shared_notes', filter: `pair_id=eq.${pairId}` },
+        () => cb()
+      )
+  );
+}
+
 // ---------- snaps: the memories calendar ----------
 
 function rowToSnap(r: any): PairSnap {
+  // art can be a hefty data URI; only trust real PNG/JPEG data URIs
+  const art =
+    typeof r.art === 'string' && /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(r.art)
+      ? r.art
+      : null;
   return {
     id: r.id,
     author: r.author,
@@ -742,6 +852,7 @@ function rowToSnap(r: any): PairSnap {
     items: Array.isArray(r.items) ? (r.items as PairSnap['items']).map((it: any) => it) : [],
     question: String(r.question ?? ''),
     answers: Array.isArray(r.answers) ? r.answers : null,
+    art,
     createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
   };
 }
@@ -769,6 +880,7 @@ export async function saveSnap(pairId: string, snap: PairSnap): Promise<void> {
     items: snap.items,
     question: snap.question,
     answers: snap.answers,
+    art: snap.art,
   });
   if (error) throw new Error(error.message);
 }
