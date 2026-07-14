@@ -1822,13 +1822,24 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
             <Text style={styles.modalSub}>
               {aiImage ? 'your doodle, repainted ♡' : 'the AI repaints your page as a tiny masterpiece'}
             </Text>
-            {aiImage ? (
-              <Image source={{ uri: aiImage }} style={styles.aiImage} resizeMode="cover" />
-            ) : (
-              <View ref={aiViewRef} collapsable={false} style={styles.aiPreview}>
+            {/* the sketch view stays mounted even while the painting is shown,
+                so "repaint again" always has a live view to capture on native */}
+            <View style={styles.aiPreview}>
+              <View
+                ref={aiViewRef}
+                collapsable={false}
+                style={{ width: '100%', height: '100%', backgroundColor: '#FFF7FA' }}
+              >
                 <SvgXml xml={itemsToSvg(items)} width="100%" height="100%" />
               </View>
-            )}
+              {aiImage && (
+                <Image
+                  source={{ uri: aiImage }}
+                  style={[StyleSheet.absoluteFill as object, { borderRadius: 14 }]}
+                  resizeMode="cover"
+                />
+              )}
+            </View>
             <View style={{ marginTop: 12 }}>
               <Button
                 label={aiBusy ? 'painting… (10-20s)' : aiImage ? '✨ repaint again' : '✨ repaint it'}
