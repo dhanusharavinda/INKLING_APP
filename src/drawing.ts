@@ -19,6 +19,17 @@ export function shapeToPath(points: number[]): string {
   return d + ' Z';
 }
 
+// All of a filled region's rings as one path (drawn with even-odd fill, so
+// holes stay open no matter the ring order).
+export function shapePathD(points: number[], holes?: number[][]): string {
+  let d = shapeToPath(points);
+  for (const h of holes ?? []) {
+    const hd = shapeToPath(h);
+    if (hd) d += ' ' + hd;
+  }
+  return d;
+}
+
 export function strokeToPath(s: Stroke): string {
   const pts = s.points;
   if (!Array.isArray(pts) || pts.length < 2 || pts.some((n) => !Number.isFinite(n))) return '';
@@ -66,7 +77,7 @@ export function itemsToSvg(items: CanvasItem[], background = '#FFF7FA'): string 
         return `<rect width="${DRAW_SPACE}" height="${DRAW_SPACE}" rx="8" fill="${safeColor(it.color, '#FFF7FA')}"/>`;
       }
       if (it.kind === 'shape') {
-        return `<path d="${shapeToPath(it.points)}" fill="${safeColor(it.color)}" stroke="none"/>`;
+        return `<path d="${shapePathD(it.points, it.holes)}" fill="${safeColor(it.color)}" fill-rule="evenodd" stroke="none"/>`;
       }
       if (it.kind === 'text') {
         const x = clampNum(it.x, 0, DRAW_SPACE, 50);

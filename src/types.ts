@@ -97,14 +97,17 @@ export interface CanvasFill {
   color: string;
 }
 
-// The bucket poured inside a closed drawn outline: the outline's polygon,
-// filled with a color (flat [x1,y1,...] points in the 0..100 square).
+// A bucket-filled region (MS Paint style): its boundary rings as polygons in
+// the 0..100 square. points is one ring; holes are the rest (a background
+// fill around a closed drawing keeps the drawing as a hole). Rendered with
+// even-odd fill so ring order never matters.
 export interface CanvasShape {
   kind: 'shape';
   id: string;
   author: string;
   color: string;
   points: number[];
+  holes?: number[][];
 }
 
 export type CanvasItem = CanvasStroke | CanvasText | CanvasFill | CanvasShape;

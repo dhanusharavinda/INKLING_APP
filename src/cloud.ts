@@ -314,6 +314,9 @@ function rowToCanvasItem(r: any): CanvasItem {
       author: r.author,
       color: typeof s.color === 'string' ? s.color : '#F2789F',
       points: Array.isArray(s.points) ? (s.points as number[]) : [],
+      holes: Array.isArray(s.holes)
+        ? (s.holes as unknown[]).filter((h): h is number[] => Array.isArray(h))
+        : undefined,
     };
   }
   if (s.kind === 'text') {
@@ -429,7 +432,7 @@ export async function addCanvasItem(pairId: string, item: CanvasItem): Promise<v
       : item.kind === 'fill'
       ? { kind: 'fill', color: item.color }
       : item.kind === 'shape'
-      ? { kind: 'shape', color: item.color, points: item.points }
+      ? { kind: 'shape', color: item.color, points: item.points, holes: item.holes ?? [] }
       : { color: item.color, width: item.width, points: item.points };
   const { error } = await supabase.from('canvas_strokes').insert({
     id: item.id,

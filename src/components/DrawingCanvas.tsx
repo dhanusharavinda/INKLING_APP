@@ -12,7 +12,8 @@ import {
 } from 'react-native';
 import Svg, { G, Path, Rect, Text as SvgText } from 'react-native-svg';
 import { CanvasItem, CanvasText, Stroke } from '../types';
-import { CANVAS_BG, DRAW_SPACE, shapeToPath, strokeToPath } from '../drawing';
+import { CANVAS_BG, DRAW_SPACE, shapePathD, strokeToPath } from '../drawing';
+import { floodFillRegion } from '../floodFill';
 import { palette, serif, shadeHex, tintHex } from '../theme';
 
 // Cute pastel pens for the shared doodle board.
@@ -70,32 +71,9 @@ function shadesOf(base: string): string[] {
   ];
 }
 
-// Ray casting: is the point inside the polygon drawn by these stroke points?
-function pointInPolygon(x: number, y: number, pts: number[]): boolean {
-  let inside = false;
-  const n = Math.floor(pts.length / 2);
-  for (let i = 0, j = n - 1; i < n; j = i++) {
-    const xi = pts[i * 2];
-    const yi = pts[i * 2 + 1];
-    const xj = pts[j * 2];
-    const yj = pts[j * 2 + 1];
-    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-// A stroke counts as a closed outline when its ends (nearly) meet.
-function isClosedStroke(s: Stroke): boolean {
-  const p = s.points;
-  if (!Array.isArray(p) || p.length < 8) return false;
-  const dx = p[0] - p[p.length - 2];
-  const dy = p[1] - p[p.length - 1];
-  return Math.hypot(dx, dy) <= Math.max(8, s.width * 1.5);
-}
-
 type Draft = Omit<CanvasText, 'id' | 'author'>;
 
-interface TraceImage {
+export interface TraceImage {
   uri: string;
   ratio: number; // natural width / height
   x: number; // 0..100 space, center
@@ -111,7 +89,7 @@ interface Props {
   onStroke: (s: Stroke) => void; // a finished line of mine
   onText: (t: Draft) => void; // a placed text/emoji sticker of mine
   onFill: (color: string) => void; // paint-bucket: flood the page with a color
-  onShape: (points: number[], color: string) => void; // bucket inside a closed outline
+  onShape: (points: number[], holes: number[][], color: string) => void; // bucket fill region
   onUndo: () => void; // remove my latest item
   onRedo: () => void; // bring back what I just undid
   onClear: () => void; // wipe the board (parent confirms)
@@ -122,6 +100,11 @@ interface Props {
   bigPalette?: boolean; // the 20-color paint box (expanded page)
   zoomable?: boolean; // two-finger zoom + pan for precise lines (expanded page)
   onPickTraceImage?: () => Promise<{ uri: string; ratio: number } | null>;
+  // the trace ghost lives in the PARENT so it follows you into ⛶ expand
+  trace?: TraceImage | null;
+  onTraceChange?: (t: TraceImage | null) => void;
+  // a ✨ Van Gogh painting pinned under everything; you draw right on top
+  backgroundImage?: string | null;
 }
 
 export default function DrawingCanvas({
@@ -140,6 +123,9 @@ export default function DrawingCanvas({
   bigPalette = false,
   zoomable = false,
   onPickTraceImage,
+  trace = null,
+  onTraceChange,
+  backgroundImage = null,
 }: Props) {
   const pens = bigPalette ? PENS_BIG : PENS;
   const [size, setSize] = useState(280);
@@ -184,10 +170,17 @@ export default function DrawingCanvas({
   } | null>(null);
 
   // trace mode: a temporary reference photo floats over the page while you
-  // draw; it is local-only, never synced, never snapped.
-  const [trace, setTrace] = useState<TraceImage | null>(null);
+  // draw; it is local-only, never synced, never snapped. State lives in the
+  // parent (shared with the expanded page); updates go through onTraceChange.
   const traceRef = useRef<TraceImage | null>(null);
   traceRef.current = trace;
+  const onTraceChangeRef = useRef(onTraceChange);
+  onTraceChangeRef.current = onTraceChange;
+  const setTrace = (
+    next: TraceImage | null | ((t: TraceImage | null) => TraceImage | null)
+  ) => {
+    onTraceChangeRef.current?.(typeof next === 'function' ? next(traceRef.current) : next);
+  };
   const traceGesture = useRef<{
     d0: number;
     a0: number;
@@ -249,18 +242,14 @@ export default function DrawingCanvas({
   };
 
   const tryBucketAt = (x: number, y: number) => {
-    // topmost closed outline under the tap wins
-    const list = itemsRef.current;
-    for (let i = list.length - 1; i >= 0; i--) {
-      const it = list[i];
-      if (it.kind !== 'stroke') continue;
-      if (!isClosedStroke(it)) continue;
-      if (pointInPolygon(x, y, it.points)) {
-        onShapeRef.current(it.points, penRef.current);
-        return;
-      }
+    // MS-Paint bucket: flood outward from the tap, drawn lines are the walls,
+    // and the traced region (with holes for closed drawings) becomes one item
+    const region = floodFillRegion(itemsRef.current, x, y);
+    if (region) {
+      onShapeRef.current(region.points, region.holes, penRef.current);
+    } else {
+      showHint('that spot is too tiny to fill, zoom in or try beside it ♡');
     }
-    showHint('tap inside a CLOSED outline to fill it · hold 🪣 to flood the page');
   };
 
   const pan = useRef(
@@ -437,11 +426,11 @@ export default function DrawingCanvas({
   };
 
   async function handlePickTrace() {
-    if (!onPickTraceImage) return;
+    if (!onPickTraceImage || !onTraceChange) return;
     try {
       const picked = await onPickTraceImage();
       if (!picked) return;
-      setTrace({
+      setTrace(() => ({
         uri: picked.uri,
         ratio: picked.ratio > 0 ? picked.ratio : 1,
         x: 50,
@@ -450,7 +439,7 @@ export default function DrawingCanvas({
         rotation: 0,
         opacity: 0.45,
         adjusting: true,
-      });
+      }));
     } catch {
       showHint('could not open that image, try another one');
     }
@@ -480,14 +469,36 @@ export default function DrawingCanvas({
         onLayout={(e) => setSize(Math.round(e.nativeEvent.layout.width))}
         {...pan.panHandlers}
       >
+        {/* the ✨ painting sits under everything and follows the zoom */}
+        {backgroundImage && (
+          <Image
+            source={{ uri: backgroundImage }}
+            style={{
+              position: 'absolute',
+              left: (view.tx / DRAW_SPACE) * size,
+              top: (view.ty / DRAW_SPACE) * size,
+              width: view.k * size,
+              height: view.k * size,
+            }}
+            resizeMode="cover"
+          />
+        )}
         <Svg width={size} height={size} viewBox={`0 0 ${DRAW_SPACE} ${DRAW_SPACE}`}>
-          <Rect width={DRAW_SPACE} height={DRAW_SPACE} fill={CANVAS_BG} rx={4} />
+          {!backgroundImage && (
+            <Rect width={DRAW_SPACE} height={DRAW_SPACE} fill={CANVAS_BG} rx={4} />
+          )}
           <G transform={`translate(${view.tx}, ${view.ty}) scale(${view.k})`}>
             {rendered.map((it, i) =>
               it.kind === 'fill' ? (
                 <Rect key={it.id || i} width={DRAW_SPACE} height={DRAW_SPACE} fill={it.color} rx={4} />
               ) : it.kind === 'shape' ? (
-                <Path key={it.id || i} d={shapeToPath(it.points)} fill={it.color} stroke="none" />
+                <Path
+                  key={it.id || i}
+                  d={shapePathD(it.points, it.holes)}
+                  fill={it.color}
+                  fillRule="evenodd"
+                  stroke="none"
+                />
               ) : it.kind === 'text' ? (
                 <SvgText
                   key={it.id || i}
@@ -554,7 +565,7 @@ export default function DrawingCanvas({
             />
           </View>
         )}
-        {rendered.length === 0 && !draft && !trace && (
+        {rendered.length === 0 && !draft && !trace && !backgroundImage && (
           <View style={styles.hintWrap} pointerEvents="none">
             <Text style={styles.hint}>your shared page, doodle together ♡</Text>
           </View>
@@ -571,7 +582,7 @@ export default function DrawingCanvas({
         )}
         {!trace?.adjusting && bucket && (
           <View style={styles.draftBanner} pointerEvents="none">
-            <Text style={styles.draftBannerText}>🪣 tap inside a closed outline to fill it</Text>
+            <Text style={styles.draftBannerText}>🪣 tap any spot to fill it, lines are walls</Text>
           </View>
         )}
         {zoomable && view.k > 1.02 && (
@@ -708,7 +719,7 @@ export default function DrawingCanvas({
           onPress={() => {
             setEraser(false);
             setBucket((v) => {
-              if (!v) showHint('tap inside a closed outline to fill it · hold 🪣 to flood the page');
+              if (!v) showHint('tap any spot to fill it · your lines are the walls ♡');
               return !v;
             });
           }}
@@ -722,9 +733,9 @@ export default function DrawingCanvas({
         >
           <Text style={{ fontSize: 13 }}>🪣</Text>
         </Pressable>
-        {onPickTraceImage && (
+        {onPickTraceImage && onTraceChange && (
           <Pressable onPress={handlePickTrace} style={styles.toolBtn} hitSlop={4}>
-            <Text style={{ fontSize: 13 }}>📷</Text>
+            <Text style={{ fontSize: 13 }}>👻</Text>
           </Pressable>
         )}
       </View>

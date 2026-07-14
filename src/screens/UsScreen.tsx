@@ -100,8 +100,9 @@ import {
   refreshDoodleWidget,
   refreshGameWidget,
 } from '../widget/widgetSync';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import EmotionAvatar from '../components/EmotionAvatar';
-import DrawingCanvas from '../components/DrawingCanvas';
+import DrawingCanvas, { TraceImage } from '../components/DrawingCanvas';
 import EmojiRain from '../components/EmojiRain';
 import { Button, Card, ProgressBar } from '../components/ui';
 
@@ -152,17 +153,19 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   const [subTab, setSubTab] = useState<SubTab>('doodle');
   const [gameTab, setGameTab] = useState<GameTab>('xo');
 
-  // doodle extras: expand, AI art, snap, redo
+  // doodle extras: expand, AI art, snap, redo, trace ghost
   const [expandOpen, setExpandOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiImage, setAiImage] = useState<string | null>(null);
-  const [artView, setArtView] = useState(false); // painting shown on the doodle card
   const aiViewRef = useRef<View>(null);
   const [snapBusy, setSnapBusy] = useState(false);
   const [snapHint, setSnapHint] = useState<string | null>(null);
   const snapHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [redoStack, setRedoStack] = useState<CanvasItem[]>([]);
+  // the trace ghost lives here so it follows you between the small page and
+  // ⛶ expand (it is local-only: never synced, never snapped)
+  const [trace, setTrace] = useState<TraceImage | null>(null);
 
   // memories calendar
   const [memMonth, setMemMonth] = useState(() => {
@@ -525,9 +528,9 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     setRedoStack([]);
     commitItem({ kind: 'fill', id: makeId(), author: userId, color });
   };
-  const handleShape = (points: number[], color: string) => {
+  const handleShape = (points: number[], holes: number[][], color: string) => {
     setRedoStack([]);
-    commitItem({ kind: 'shape', id: makeId(), author: userId, color, points });
+    commitItem({ kind: 'shape', id: makeId(), author: userId, color, points, holes });
   };
 
   async function handleUndo() {
@@ -887,6 +890,32 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   }
 
   // ---------- AI art (Van Gogh mode) ----------
+  // The painting is pinned UNDER the shared page: you keep sketching (or
+  // tracing) right on top of it, it survives app restarts, and it only goes
+  // away when you take it down yourself. Stored on this device per pair.
+
+  const artLoaded = useRef(false);
+  useEffect(() => {
+    artLoaded.current = false;
+    if (!pair?.id) {
+      setAiImage(null);
+      return;
+    }
+    AsyncStorage.getItem(`inkling.aiart.${pair.id}`)
+      .then((v) => {
+        setAiImage((cur) => cur ?? v);
+        artLoaded.current = true;
+      })
+      .catch(() => {
+        artLoaded.current = true;
+      });
+  }, [pair?.id]);
+  useEffect(() => {
+    if (!pair?.id || !artLoaded.current) return;
+    const key = `inkling.aiart.${pair.id}`;
+    if (aiImage) AsyncStorage.setItem(key, aiImage).catch(() => {});
+    else AsyncStorage.removeItem(key).catch(() => {});
+  }, [aiImage, pair?.id]);
 
   async function handleAiRepaint() {
     if (aiBusy) return;
@@ -899,12 +928,20 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     try {
       const img = await vanGoghify({ apiKey: apiKey.trim(), items, viewRef: aiViewRef.current });
       setAiImage(img);
-      setArtView(true); // the painting hangs on the doodle card once the modal closes
     } catch (e) {
       setError(friendlyCloudError(e));
     } finally {
       setAiBusy(false);
     }
+  }
+
+  function handleRemoveArt() {
+    confirmAsk(
+      'Take the painting down?',
+      'The ✨ painting comes off your page. Snapped copies stay in your memories.',
+      () => setAiImage(null),
+      'Take it down'
+    );
   }
 
   // ---------- trace: a temporary reference photo to draw over ----------
@@ -1248,11 +1285,8 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                     <Text style={styles.canvasToolText}>✨ AI art</Text>
                   </Pressable>
                   {!!aiImage && (
-                    <Pressable
-                      onPress={() => setArtView((v) => !v)}
-                      style={[styles.canvasToolBtn, artView && styles.canvasToolBtnActive]}
-                    >
-                      <Text style={styles.canvasToolText}>{artView ? '✏️ sketch' : '🖼 painting'}</Text>
+                    <Pressable onPress={handleRemoveArt} style={styles.canvasToolBtn}>
+                      <Text style={styles.canvasToolText}>🗑 painting</Text>
                     </Pressable>
                   )}
                   <Pressable
@@ -1267,36 +1301,28 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                   </Pressable>
                 </View>
                 {snapHint && <Text style={styles.snapHint}>{snapHint}</Text>}
-                {aiImage && artView ? (
-                  <>
-                    <Image source={{ uri: aiImage }} style={styles.aiImage} resizeMode="cover" />
-                    <Text style={styles.canvasHint}>
-                      your page, repainted ✨ 📸 snap keeps BOTH the painting and the sketch · tap ✏️
-                      sketch to keep drawing
-                    </Text>
-                  </>
-                ) : (
-                  <>
-                    <DrawingCanvas
-                      items={items}
-                      onStroke={handleStroke}
-                      onText={handleText}
-                      onFill={handleFill}
-                      onShape={handleShape}
-                      onUndo={handleUndo}
-                      onRedo={handleRedo}
-                      onClear={handleClear}
-                      canUndo={items.some((s) => s.author === userId)}
-                      canRedo={redoStack.length > 0}
-                      canClear={items.length > 0}
-                      onPickTraceImage={pickTraceImage}
-                    />
-                    <Text style={styles.canvasHint}>
-                      You both draw on this same page. 📷 traces a photo, 🪣 fills closed shapes, 📸
-                      snap saves it (with today's 💌) into your memories calendar.
-                    </Text>
-                  </>
-                )}
+                <DrawingCanvas
+                  items={items}
+                  onStroke={handleStroke}
+                  onText={handleText}
+                  onFill={handleFill}
+                  onShape={handleShape}
+                  onUndo={handleUndo}
+                  onRedo={handleRedo}
+                  onClear={handleClear}
+                  canUndo={items.some((s) => s.author === userId)}
+                  canRedo={redoStack.length > 0}
+                  canClear={items.length > 0}
+                  onPickTraceImage={pickTraceImage}
+                  trace={trace}
+                  onTraceChange={setTrace}
+                  backgroundImage={aiImage}
+                />
+                <Text style={styles.canvasHint}>
+                  You both draw on this same page. 👻 traces a photo, 🪣 fills like MS Paint (lines
+                  are walls), ✨ pins a painting under your sketch, 📸 snap saves it all (with
+                  today's 💌) into your memories calendar.
+                </Text>
               </Card>
             )}
 
@@ -1804,6 +1830,9 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
               bigPalette
               zoomable
               onPickTraceImage={pickTraceImage}
+              trace={trace}
+              onTraceChange={setTrace}
+              backgroundImage={aiImage}
             />
           </ScrollView>
         </View>
@@ -1851,20 +1880,18 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
             {aiImage && !aiBusy && (
               <View style={{ marginTop: 10 }}>
                 <Button
-                  label="🖼 hang it on our page"
-                  onPress={() => {
-                    setArtView(true);
-                    setAiOpen(false);
-                  }}
+                  label="🖼 pin it under our page"
+                  onPress={() => setAiOpen(false)}
                   color="#7FD1BE"
                   textColor={palette.ink}
                 />
+                <Text style={styles.questHint}>
+                  it stays on the page (you can sketch and trace right on top) until you take it
+                  down with 🗑
+                </Text>
                 <Pressable
-                  onPress={() => {
-                    setAiImage(null);
-                    setArtView(false);
-                  }}
-                  style={{ marginTop: 10, alignItems: 'center' }}
+                  onPress={() => setAiImage(null)}
+                  style={{ marginTop: 8, alignItems: 'center' }}
                   hitSlop={6}
                 >
                   <Text style={styles.canvasToolText}>✕ discard the painting</Text>
