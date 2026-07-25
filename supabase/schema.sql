@@ -463,6 +463,8 @@ alter table public.pair_game add column if not exists last_streak_day text not n
 alter table public.pair_game add column if not exists last_freeze_day text not null default '';
 alter table public.pair_game add column if not exists freeze_week text not null default '';
 alter table public.pair_game add column if not exists freezes_used integer not null default 0;
+-- 🛟 lifeguards: earned one per 10 streak days, each saves one missed day
+alter table public.pair_game add column if not exists lifeguards integer not null default 0;
 alter table public.pair_game drop column if exists closeness;
 
 alter table public.pair_game enable row level security;
@@ -483,12 +485,14 @@ drop function if exists public.game_tap(integer);
 
 -- tap_count lets clients batch rapid taps into one round-trip.
 -- Each person can contribute at most 60 of the daily 100 ("it doesn't always
--- have to be 50-50, 60-40 is love too"). One streak freeze per week quietly
--- covers a single fully-missed day so real life doesn't zero the streak.
+-- have to be 50-50, 60-40 is love too"). Every 10th streak day earns a 🛟
+-- lifeguard; each lifeguard quietly saves ONE fully-missed day, so a lapse
+-- only resets the streak when you don't have enough lifeguards to cover it.
 create or replace function public.game_tap(tap_count integer default 1)
 returns table (
   taps integer, taps_a integer, taps_b integer, day text,
-  streak integer, last_streak_day text, last_freeze_day text, updated_at timestamptz
+  streak integer, last_streak_day text, last_freeze_day text,
+  lifeguards integer, updated_at timestamptz
 )
 language plpgsql
 security definer
@@ -500,10 +504,9 @@ declare
   n integer := greatest(1, least(25, coalesce(tap_count, 1)));
   i_am_a boolean;
   my_taps integer;
+  gap integer;
   today text := to_char(now() at time zone 'utc', 'YYYY-MM-DD');
   yesterday text := to_char((now() at time zone 'utc') - interval '1 day', 'YYYY-MM-DD');
-  daybefore text := to_char((now() at time zone 'utc') - interval '2 days', 'YYYY-MM-DD');
-  thisweek text := to_char(now() at time zone 'utc', 'IYYY-IW');
 begin
   select * into pr from public.pairs
     where user_a = auth.uid() or user_b = auth.uid()
@@ -517,12 +520,6 @@ begin
     on conflict (pair_id) do nothing;
   select * into g from public.pair_game pg where pg.pair_id = pr.id for update;
 
-  -- weekly freeze refill
-  if g.freeze_week <> thisweek then
-    g.freeze_week := thisweek;
-    g.freezes_used := 0;
-  end if;
-
   -- a new day: birds start apart again
   if g.day <> today then
     g.taps := 0;
@@ -530,9 +527,15 @@ begin
     g.taps_b := 0;
     g.day := today;
     if g.last_streak_day <> today and g.last_streak_day <> yesterday then
-      -- exactly one missed day and a freeze in hand: quietly cover it
-      if g.last_streak_day = daybefore and g.freezes_used < 1 then
-        g.freezes_used := g.freezes_used + 1;
+      -- missed day(s): one lifeguard rescues one day; spend only if the
+      -- whole gap is covered, otherwise the streak resets (none are wasted)
+      if g.last_streak_day ~ '^\d{4}-\d{2}-\d{2}$' then
+        gap := (yesterday::date - g.last_streak_day::date);
+      else
+        gap := -1;
+      end if;
+      if gap >= 1 and g.lifeguards >= gap then
+        g.lifeguards := g.lifeguards - gap;
         g.last_streak_day := yesterday;
         g.last_freeze_day := yesterday;
       else
@@ -551,7 +554,7 @@ begin
   end if;
   g.taps := least(100, g.taps_a + g.taps_b);
 
-  -- goal reached: bank today's streak once
+  -- goal reached: bank today's streak once; every 10th day earns a 🛟
   if g.taps >= 100 and g.last_streak_day <> today then
     if g.last_streak_day = yesterday then
       g.streak := g.streak + 1;
@@ -559,18 +562,21 @@ begin
       g.streak := 1;
     end if;
     g.last_streak_day := today;
+    if g.streak % 10 = 0 then
+      g.lifeguards := g.lifeguards + 1;
+    end if;
   end if;
 
   update public.pair_game pg
     set taps = g.taps, taps_a = g.taps_a, taps_b = g.taps_b, day = g.day,
         streak = g.streak, last_streak_day = g.last_streak_day,
-        last_freeze_day = g.last_freeze_day, freeze_week = g.freeze_week,
-        freezes_used = g.freezes_used, updated_at = now()
+        last_freeze_day = g.last_freeze_day, lifeguards = g.lifeguards,
+        updated_at = now()
     where pg.pair_id = pr.id;
 
   return query
     select pg.taps, pg.taps_a, pg.taps_b, pg.day, pg.streak,
-           pg.last_streak_day, pg.last_freeze_day, pg.updated_at
+           pg.last_streak_day, pg.last_freeze_day, pg.lifeguards, pg.updated_at
     from public.pair_game pg where pg.pair_id = pr.id;
 end;
 $$;

@@ -968,15 +968,17 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     prevReached.current = now;
   }, [game, pour]);
 
-  function streakCheer(streakDays: number, reachedToday: boolean): string | null {
+  function streakCheer(streakDays: number, reachedToday: boolean, guards: number): string | null {
     if (!reachedToday) return null;
-    if (streakDays >= 100) return `${streakDays} days!!! certified soulmates 💯💗`;
-    if (streakDays >= 50 && streakDays % 25 === 0) return `${streakDays} days, frame this love 🖼️`;
-    if (streakDays === 30) return 'a WHOLE month of showing up for each other 🌙💗';
+    if (streakDays >= 100 && streakDays % 10 === 0)
+      return `${streakDays} days!!! certified soulmates 💯 +1 lifeguard 🛟`;
+    if (streakDays > 0 && streakDays % 10 === 0)
+      return `day ${streakDays}!! you earned a lifeguard 🛟 (${guards} in the bank)`;
     if (streakDays === 14) return 'two weeks strong, you two 🕊️';
     if (streakDays === 7) return 'a whole week of showing up for each other 💗';
     if (streakDays === 3) return 'three days in a row 🥹 it’s becoming a thing';
     if (streakDays === 1) return 'day one of your little streak 🌱';
+    if (streakDays >= 50 && streakDays % 25 === 0) return `${streakDays} days, frame this love 🖼️`;
     return `day ${streakDays} together 🔥 the birds are proud of you`;
   }
 
@@ -1344,16 +1346,19 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                     you {myShare} · {partnerName} {theirShare}
                   </Text>
                   <Text style={styles.gameStat}>🔥 {streak}</Text>
+                  <Text style={styles.gameStat}>🛟 {game?.lifeguards ?? 0}</Text>
                 </View>
                 <View style={{ width: '80%', marginTop: 6 }}>
                   <ProgressBar progress={taps / GAME_GOAL} color="#F2789F" height={9} />
                 </View>
-                {!!streakCheer(streak, reached) && (
-                  <Text style={styles.cheerNote}>{streakCheer(streak, reached)}</Text>
+                {!!streakCheer(streak, reached, game?.lifeguards ?? 0) && (
+                  <Text style={styles.cheerNote}>
+                    {streakCheer(streak, reached, game?.lifeguards ?? 0)}
+                  </Text>
                 )}
                 {froze && (
                   <Text style={styles.freezeNote}>
-                    ❄️ a streak freeze covered yesterday, your {streak}-day streak is safe
+                    🛟 a lifeguard rescued yesterday, your {streak}-day streak is safe
                   </Text>
                 )}
                 <View style={{ alignSelf: 'stretch', marginTop: 14 }}>
@@ -1373,8 +1378,9 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                 </View>
                 <Text style={styles.gameHint}>
                   100 taps a day, together. Every 25 the birds hop closer; at 100 they snuggle till
-                  midnight and the streak grows. And remember: it doesn't always have to be 50-50,
-                  60-40 is love too ♡
+                  midnight and the streak grows. Every 10-day streak earns a 🛟 lifeguard, and each
+                  lifeguard quietly rescues one missed day. And remember: it doesn't always have to
+                  be 50-50, 60-40 is love too ♡
                 </Text>
               </Card>
             )}

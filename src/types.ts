@@ -123,8 +123,9 @@ export interface PairEvent {
 }
 
 // The shared tap-game state: 100 combined taps a day keeps the birds close
-// (max 60 from one person), hitting the goal keeps the day streak alive, and
-// one weekly streak-freeze quietly covers a single missed day.
+// (max 60 from one person), hitting the goal keeps the day streak alive.
+// Every 10th streak day earns a 🛟 lifeguard; each lifeguard quietly rescues
+// one fully-missed day, so the streak only breaks when none are left.
 export interface PairGameState {
   taps: number;
   tapsA: number; // pair.userA's share today
@@ -132,7 +133,8 @@ export interface PairGameState {
   day: string; // YYYY-MM-DD (UTC) the taps belong to
   streak: number;
   lastStreakDay: string;
-  lastFreezeDay: string; // day a freeze covered, '' if never
+  lastFreezeDay: string; // most recent day a lifeguard covered, '' if never
+  lifeguards: number; // 🛟 saves in the bank
   updatedAt: number;
 }
 

@@ -608,6 +608,7 @@ function rowToGame(r: any): PairGameState {
     streak: Number(r.streak) || 0,
     lastStreakDay: String(r.last_streak_day ?? ''),
     lastFreezeDay: String(r.last_freeze_day ?? ''),
+    lifeguards: Number(r.lifeguards) || 0,
     updatedAt: r.updated_at ? Date.parse(r.updated_at) : Date.now(),
   };
 }

@@ -20,12 +20,23 @@ export function tapsToday(g: PairGameState | null, now = Date.now()): number {
   return g.day === utcDayKey(now) ? Math.min(GAME_GOAL, g.taps) : 0;
 }
 
-// The streak is only alive if its last banked day is today or yesterday.
+// Whole days between two YYYY-MM-DD keys (-1 if the first isn't a real date).
+function dayGap(fromDay: string, toDay: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDay)) return -1;
+  const ms = Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${fromDay}T00:00:00Z`);
+  return Math.round(ms / 86400000);
+}
+
+// The streak is alive if its last banked day is today or yesterday, OR the
+// missed days will be rescued by banked 🛟 lifeguards on the next tap (the
+// server spends them then; showing 0 in the meantime would look broken).
 export function effectiveStreak(g: PairGameState | null, now = Date.now()): number {
   if (!g || !g.lastStreakDay) return 0;
   const today = utcDayKey(now);
   const yesterday = utcDayKey(now - 86400000);
-  return g.lastStreakDay === today || g.lastStreakDay === yesterday ? g.streak : 0;
+  if (g.lastStreakDay === today || g.lastStreakDay === yesterday) return g.streak;
+  const gap = dayGap(g.lastStreakDay, yesterday);
+  return gap >= 1 && (g.lifeguards ?? 0) >= gap ? g.streak : 0;
 }
 
 export function goalReachedToday(g: PairGameState | null, now = Date.now()): boolean {
@@ -65,7 +76,8 @@ export function myTapsToday(g: PairGameState | null, iAmUserA: boolean, now = Da
 }
 
 // Apply n of MY taps locally, mirroring the server's day-rollover, personal
-// 60-cap and streak rules, so taps feel instant and sync in the background.
+// 60-cap, streak and 🛟 lifeguard rules, so taps feel instant and sync in
+// the background.
 export function optimisticTaps(
   g: PairGameState | null,
   n: number,
@@ -79,8 +91,18 @@ export function optimisticTaps(
   let tapsB = fresh ? 0 : g.tapsB;
   let streak = g?.streak ?? 0;
   let lastStreakDay = g?.lastStreakDay ?? '';
+  let lastFreezeDay = g?.lastFreezeDay ?? '';
+  let lifeguards = g?.lifeguards ?? 0;
   if (g && fresh && lastStreakDay !== today && lastStreakDay !== yesterday) {
-    streak = 0; // (the server may still save this with a weekly freeze)
+    const gap = dayGap(lastStreakDay, yesterday);
+    if (gap >= 1 && lifeguards >= gap) {
+      // lifeguards jump in: one save per missed day
+      lifeguards -= gap;
+      lastStreakDay = yesterday;
+      lastFreezeDay = yesterday;
+    } else {
+      streak = 0;
+    }
   }
   if (iAmUserA) tapsA = Math.min(GAME_PERSONAL_CAP, tapsA + n);
   else tapsB = Math.min(GAME_PERSONAL_CAP, tapsB + n);
@@ -88,6 +110,7 @@ export function optimisticTaps(
   if (taps >= GAME_GOAL && lastStreakDay !== today) {
     streak = lastStreakDay === yesterday ? streak + 1 : 1;
     lastStreakDay = today;
+    if (streak % 10 === 0) lifeguards += 1; // every 10th day earns a 🛟
   }
   return {
     taps,
@@ -96,7 +119,8 @@ export function optimisticTaps(
     day: today,
     streak,
     lastStreakDay,
-    lastFreezeDay: g?.lastFreezeDay ?? '',
+    lastFreezeDay,
+    lifeguards,
     updatedAt: now,
   };
 }
