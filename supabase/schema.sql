@@ -467,6 +467,18 @@ alter table public.pair_game add column if not exists freezes_used integer not n
 alter table public.pair_game add column if not exists lifeguards integer not null default 0;
 alter table public.pair_game drop column if exists closeness;
 
+-- A streak that already existed when lifeguards arrived had earned its saves
+-- long before the column did, and a new column defaults to zero: that is how
+-- a 25-day streak died with an empty bank. Grant what the current streak has
+-- already earned, exactly once (the flag keeps re-runs from re-granting saves
+-- that were legitimately spent).
+alter table public.pair_game
+  add column if not exists lifeguards_backfilled boolean not null default false;
+update public.pair_game
+  set lifeguards = greatest(lifeguards, streak / 10),
+      lifeguards_backfilled = true
+  where not lifeguards_backfilled;
+
 alter table public.pair_game enable row level security;
 
 drop policy if exists pair_game_select on public.pair_game;

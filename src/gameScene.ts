@@ -43,6 +43,34 @@ export function goalReachedToday(g: PairGameState | null, now = Date.now()): boo
   return !!g && g.lastStreakDay === utcDayKey(now);
 }
 
+// Missed days sitting between the last banked day and yesterday, but only
+// while the rescue is still ahead of us: the server settles a lapse on the
+// first tap of a new day, so once g.day is today the verdict is already in.
+function openGap(g: PairGameState | null, now: number): number {
+  if (!g || !g.lastStreakDay) return 0;
+  const today = utcDayKey(now);
+  if (g.day === today) return 0; // already settled by an earlier tap today
+  const yesterday = utcDayKey(now - 86400000);
+  if (g.lastStreakDay === today || g.lastStreakDay === yesterday) return 0;
+  const gap = dayGap(g.lastStreakDay, yesterday);
+  return gap >= 1 ? gap : 0;
+}
+
+// How many missed days a lifeguard will cover on the next tap (0 if none are
+// waiting). Surfacing this is what keeps a rescue from happening invisibly.
+export function pendingRescueDays(g: PairGameState | null, now = Date.now()): number {
+  const gap = openGap(g, now);
+  return gap > 0 && (g?.lifeguards ?? 0) >= gap ? gap : 0;
+}
+
+// Days missed that NO lifeguard can cover: the streak is about to be lost and
+// the next tap starts a new one. Worth saying out loud before it happens.
+export function unrescuableDays(g: PairGameState | null, now = Date.now()): number {
+  if (!g || g.streak <= 0) return 0;
+  const gap = openGap(g, now);
+  return gap > 0 && (g.lifeguards ?? 0) < gap ? gap : 0;
+}
+
 // 0..3 -> which bird picture (they hop closer every 25 taps).
 export function birdStage(taps: number): number {
   return Math.max(0, Math.min(3, Math.floor(taps / GAME_STAGE_SIZE)));

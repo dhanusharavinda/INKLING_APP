@@ -89,8 +89,10 @@ import {
   goalReachedToday,
   myTapsToday,
   optimisticTaps,
+  pendingRescueDays,
   stagePhrase,
   tapsToday,
+  unrescuableDays,
   utcDayKey,
 } from '../gameScene';
 import { ensureStreakReminder } from '../notifications';
@@ -1062,6 +1064,8 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   const theirShare = Math.max(0, taps - myShare);
   const yesterdayKey = utcDayKey(Date.now() - 86400000);
   const froze = game?.lastFreezeDay === yesterdayKey;
+  const rescuePending = pendingRescueDays(game);
+  const daysLost = unrescuableDays(game);
   const linkFresh = lastLink && Date.now() - lastLink.createdAt < 24 * 3600000;
 
   return (
@@ -1359,6 +1363,19 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                 {froze && (
                   <Text style={styles.freezeNote}>
                     🛟 a lifeguard rescued yesterday, your {streak}-day streak is safe
+                  </Text>
+                )}
+                {rescuePending > 0 && (
+                  <Text style={styles.freezeNote}>
+                    🛟 {rescuePending === 1 ? 'a lifeguard is' : `${rescuePending} lifeguards are`}{' '}
+                    ready to save your {streak}-day streak · one tap and{' '}
+                    {rescuePending === 1 ? 'it dives in' : 'they dive in'}
+                  </Text>
+                )}
+                {daysLost > 0 && (
+                  <Text style={styles.lostNote}>
+                    💔 {daysLost === 1 ? 'a day' : `${daysLost} days`} slipped by with no lifeguard
+                    in the bank · today starts a fresh streak
                   </Text>
                 )}
                 <View style={{ alignSelf: 'stretch', marginTop: 14 }}>
@@ -2060,7 +2077,20 @@ const styles = StyleSheet.create({
   phrase: { fontSize: 14, fontWeight: '800', color: palette.ink, marginTop: 12 },
   gameStatsRow: { flexDirection: 'row', gap: 14, marginTop: 6, alignItems: 'center' },
   gameStat: { fontSize: 12, fontWeight: '800', color: palette.inkSoft },
-  freezeNote: { fontSize: 12, fontWeight: '700', color: '#4FA8E8', marginTop: 8 },
+  freezeNote: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#4FA8E8',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  lostNote: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B0688A',
+    marginTop: 8,
+    textAlign: 'center',
+  },
   gameHint: {
     fontSize: 11.5,
     color: palette.inkFaint,
