@@ -27,10 +27,6 @@ join public.pairs p on p.id = g.pair_id;
 --
 -- last_streak_day is deliberately left alone: it already says whether today's
 -- 100 taps are banked, so tomorrow simply continues from 28 -> 29.
---
--- Replace ABC123 with the code from step 1. (If step 1 returned exactly one
--- row, which it will while it is just the two of you, you can instead delete
--- the whole "and p.code = ..." line.)
 update public.pair_game g
 set streak = 28,
     lifeguards = 2,
@@ -38,7 +34,7 @@ set streak = 28,
     updated_at = now()
 from public.pairs p
 where p.id = g.pair_id
-  and p.code = 'ABC123';
+  and p.code = 'B9757E';   -- Dhanush + Delisha
 
 -- STEP 3: confirm it took (streak 28, lifeguards 2).
 select p.code, g.streak, g.lifeguards, g.last_streak_day
