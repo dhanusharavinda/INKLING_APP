@@ -49,6 +49,7 @@ import {
   fetchXo,
   friendlyCloudError,
   gameTap,
+  isSetupError,
   joinPair,
   onCanvasChange,
   onGameChange,
@@ -136,6 +137,8 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   const [refreshing, setRefreshing] = useState(false);
   const [pair, setPair] = useState<PairInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // the database has not had the newest schema.sql run on it yet
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   const [items, setItems] = useState<CanvasItem[]>([]);
   const [moods, setMoods] = useState<PairEvent[]>([]);
@@ -214,7 +217,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       if (p && p.userB) {
         const authorIds = [p.userA, p.userB].filter(Boolean) as string[];
         const amA = p.userA === userId;
-        const [cs, ms, g, x, ns, lr, ll, rp, hb, pm, pc, cy] = await Promise.all([
+        const [cs, ms, g, x, ns, lr, ll, rp] = await Promise.all([
           fetchCanvas(p.id),
           fetchLatestMoods(p.id, authorIds),
           fetchPairGame(p.id),
@@ -223,10 +226,6 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
           fetchLatestEvent(p.id, 'reaction'),
           fetchLatestEvent(p.id, 'link'),
           fetchRps(p.id, amA),
-          fetchHabits(p.id),
-          fetchProofMeta(p.id),
-          fetchPact(p.id),
-          fetchCycles(p.id),
         ]);
         setItems(cs);
         setMoods(ms);
@@ -236,10 +235,26 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         setLastReaction(lr);
         setLastLink(ll);
         setRps(rp);
-        setHabits(hb);
-        setProofMeta(pm);
-        setPact(pc);
-        setCycles(cy);
+
+        // The newer tables load separately on purpose: a database that has
+        // not run the latest schema.sql yet must not take the doodle page,
+        // the birds and the notes down with it.
+        try {
+          const [hb, pm, pc, cy] = await Promise.all([
+            fetchHabits(p.id),
+            fetchProofMeta(p.id),
+            fetchPact(p.id),
+            fetchCycles(p.id),
+          ]);
+          setHabits(hb);
+          setProofMeta(pm);
+          setPact(pc);
+          setCycles(cy);
+          setNeedsSetup(false);
+        } catch (e) {
+          if (isSetupError(e)) setNeedsSetup(true);
+          else setError(friendlyCloudError(e));
+        }
       } else {
         setItems([]);
         setMoods([]);
@@ -323,10 +338,12 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
           fetchLatestEvent(pair.id, 'link'),
           fetchRps(pair.id, pair.userA === userId),
           fetchMyPair(),
-          wantAcct ? fetchHabits(pair.id) : Promise.resolve(undefined),
-          wantAcct ? fetchProofMeta(pair.id, todayK) : Promise.resolve(undefined),
-          wantAcct ? fetchPact(pair.id) : Promise.resolve(undefined),
-          wantAcct ? fetchCycles(pair.id) : Promise.resolve(undefined),
+          // swallowed individually: an unmigrated database must not stop the
+          // canvas, moods and game from syncing on this tick
+          wantAcct ? fetchHabits(pair.id).catch(() => undefined) : Promise.resolve(undefined),
+          wantAcct ? fetchProofMeta(pair.id, todayK).catch(() => undefined) : Promise.resolve(undefined),
+          wantAcct ? fetchPact(pair.id).catch(() => undefined) : Promise.resolve(undefined),
+          wantAcct ? fetchCycles(pair.id).catch(() => undefined) : Promise.resolve(undefined),
         ]);
         // unlink requests (and the unlink itself) land through here
         setPair((prev) => {
@@ -1100,10 +1117,12 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       setProofMeta(pm);
       setPact(pc);
       setCycles(cy);
+      setNeedsSetup(false);
       // a poll that started before this refresh may not overwrite it
       acctStamp.current = Date.now();
     } catch (e) {
-      setError(friendlyCloudError(e));
+      if (isSetupError(e)) setNeedsSetup(true);
+      else setError(friendlyCloudError(e));
     }
   }, [pair]);
 
@@ -1504,7 +1523,27 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
               </Card>
             )}
 
-            {subTab === 'habits' && (
+            {needsSetup && (subTab === 'habits' || subTab === 'cycle') && (
+              <Card tint="#FCF1DA" style={{ marginTop: 10 }}>
+                <Text style={styles.setupTitle}>🔧 one quick database update</Text>
+                <Text style={styles.setupBody}>
+                  Promises and the cycle tracker need tables that are not in your Supabase
+                  project yet. It takes about thirty seconds, once:
+                </Text>
+                <Text style={styles.setupStep}>1 · open supabase.com/dashboard</Text>
+                <Text style={styles.setupStep}>2 · SQL Editor → New query</Text>
+                <Text style={styles.setupStep}>
+                  3 · paste everything from supabase/schema.sql and press Run
+                </Text>
+                <Text style={styles.setupBody}>
+                  Nothing you already have is touched, and both your phone and{' '}
+                  {partnerName}&apos;s browser pick it up the moment it finishes. Pull down to
+                  refresh here afterwards.
+                </Text>
+              </Card>
+            )}
+
+            {subTab === 'habits' && !needsSetup && (
               <HabitsSection
                 pair={pair}
                 userId={userId}
@@ -1519,7 +1558,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
               />
             )}
 
-            {subTab === 'cycle' && (
+            {subTab === 'cycle' && !needsSetup && (
               <CycleSection
                 pair={pair}
                 userId={userId}
@@ -2542,6 +2581,15 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   stayText: { fontSize: 13, fontWeight: '800', color: '#D6336C' },
+  setupTitle: { fontFamily: serif, fontSize: 17, fontWeight: '700', color: '#A97B1D' },
+  setupBody: { fontSize: 13, lineHeight: 19, color: palette.inkSoft, marginTop: 8 },
+  setupStep: {
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '700',
+    color: palette.ink,
+    marginTop: 4,
+  },
   modalSub: { fontSize: 12.5, color: palette.inkSoft, marginTop: 2, marginBottom: 12 },
   error: {
     marginTop: 14,

@@ -25,7 +25,21 @@ export function friendlyCloudError(e: unknown): string {
   if (/UnknownHost|resolve host|Network request failed|fetch failed|Failed to fetch/i.test(msg)) {
     return 'Cannot reach the cloud. Check your internet, and make sure your Supabase project is active (free projects pause after inactivity: open supabase.com/dashboard and press Restore).';
   }
+  // PostgREST says "Could not find the table 'public.x' in the schema cache"
+  // when the database has not had supabase/schema.sql run on it yet. That is
+  // a setup step, not a fault, so say what to do instead of showing the
+  // internal message.
+  if (/schema cache|Could not find the (table|function|column)/i.test(msg)) {
+    return 'This part needs a quick one-time database update. Open your Supabase dashboard → SQL Editor → New query, paste everything from supabase/schema.sql, and press Run. Nothing you already have is lost, and both phones pick it up straight away.';
+  }
   return msg;
+}
+
+// True when an error is just "the database has not been migrated yet", so
+// callers can keep the rest of the screen alive instead of failing whole.
+export function isSetupError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /schema cache|Could not find the (table|function|column)/i.test(msg);
 }
 
 export interface CloudSession {
