@@ -995,6 +995,9 @@ create table if not exists public.pair_habits (
 );
 create index if not exists pair_habits_pair_idx
   on public.pair_habits (pair_id, created_at);
+-- Retiring a promise takes both thumbs: the first fingerprint hold only
+-- records the ask, the partner's hold is what deletes it.
+alter table public.pair_habits add column if not exists retire_requested_by uuid;
 
 create table if not exists public.habit_proofs (
   id          text primary key,
@@ -1107,14 +1110,10 @@ create policy habits_insert on public.pair_habits
         and (owner = p.user_a or owner = p.user_b)
     )
   );
+-- Deliberately NO delete policy: a promise can only be retired through
+-- habit_retire below, which requires both people's fingerprints. Adding a
+-- promise is easy, walking away from one is not.
 drop policy if exists habits_delete on public.pair_habits;
-create policy habits_delete on public.pair_habits
-  for delete using (
-    exists (
-      select 1 from public.pairs p
-      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
-    )
-  );
 
 -- proofs: only the habit's owner logs them, only for TODAY (no backfilling a
 -- prettier past), one per habit per day. The author may delete today's proof
@@ -1214,10 +1213,151 @@ begin
 end;
 $$;
 
+-- Retire a promise. The first call (one fingerprint) only records the ask;
+-- the partner's call is the confirmation that actually deletes it. Mirrors
+-- how unlinking works, because quitting on each other should take two.
+create or replace function public.habit_retire(h_id text)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  pr public.pairs%rowtype;
+  h public.pair_habits%rowtype;
+begin
+  select * into pr from public.pairs
+    where user_a = auth.uid() or user_b = auth.uid()
+    limit 1;
+  if pr.id is null then
+    raise exception 'You are not linked with anyone yet.';
+  end if;
+  select * into h from public.pair_habits ph
+    where ph.id = h_id and ph.pair_id = pr.id
+    for update;
+  if h.id is null then
+    return 'gone';
+  end if;
+  -- a solo pair (partner not joined yet) has nobody to confirm with
+  if pr.user_b is null then
+    delete from public.pair_habits where id = h.id;
+    return 'deleted';
+  end if;
+  if h.retire_requested_by is null or h.retire_requested_by = auth.uid() then
+    update public.pair_habits set retire_requested_by = auth.uid() where id = h.id;
+    return 'requested';
+  end if;
+  delete from public.pair_habits where id = h.id;
+  return 'deleted';
+end;
+$$;
+
+-- Calling off a retirement is a single tap on purpose: keeping a promise
+-- should always be easier than dropping it.
+create or replace function public.habit_retire_cancel(h_id text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.pair_habits ph
+    set retire_requested_by = null
+    where ph.id = h_id
+      and ph.retire_requested_by is not null
+      and exists (
+        select 1 from public.pairs p
+        where p.id = ph.pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+      );
+end;
+$$;
+
 revoke all on function public.habit_react(text, text) from public;
 revoke all on function public.pact_sign() from public;
+revoke all on function public.habit_retire(text) from public;
+revoke all on function public.habit_retire_cancel(text) from public;
 grant execute on function public.habit_react(text, text) to authenticated;
 grant execute on function public.pact_sign() to authenticated;
+grant execute on function public.habit_retire(text) to authenticated;
+grant execute on function public.habit_retire_cancel(text) to authenticated;
+
+-- ---------- cycle tracking: her rhythm, tracked by both --------------------
+-- One row per period. Either partner may log or correct an entry (he can log
+-- it on the day she is too wiped out to), but every row names whose cycle it
+-- belongs to. Unlike habit proofs, backdating is the normal case here: you
+-- usually remember to log a day or two in, so past starts are allowed (up to
+-- a year) while future ones are not.
+
+create table if not exists public.pair_cycles (
+  id         text primary key,
+  pair_id    uuid not null references public.pairs (id) on delete cascade,
+  subject    uuid not null references auth.users (id) on delete cascade,
+  logged_by  uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  start_day  text not null,               -- YYYY-MM-DD (UTC)
+  end_day    text,                        -- null while it is still going
+  flow       text not null default 'medium',
+  symptoms   jsonb not null default '[]'::jsonb,
+  mood       text not null default '',
+  note       text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (pair_id, subject, start_day),
+  constraint pair_cycles_flow_check
+    check (flow in ('spotting', 'light', 'medium', 'heavy')),
+  constraint pair_cycles_order_check
+    check (end_day is null or end_day >= start_day)
+);
+create index if not exists pair_cycles_pair_idx
+  on public.pair_cycles (pair_id, start_day desc);
+
+alter table public.pair_cycles enable row level security;
+
+drop policy if exists cycles_select on public.pair_cycles;
+create policy cycles_select on public.pair_cycles
+  for select using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+drop policy if exists cycles_insert on public.pair_cycles;
+create policy cycles_insert on public.pair_cycles
+  for insert with check (
+    logged_by = auth.uid()
+    and start_day <= to_char(now() at time zone 'utc', 'YYYY-MM-DD')
+    and start_day >= to_char((now() at time zone 'utc') - interval '1 year', 'YYYY-MM-DD')
+    and exists (
+      select 1 from public.pairs p
+      where p.id = pair_id
+        and (p.user_a = auth.uid() or p.user_b = auth.uid())
+        and (subject = p.user_a or subject = p.user_b)
+    )
+  );
+-- either partner may correct an entry (fix a date, close out a period)
+drop policy if exists cycles_update on public.pair_cycles;
+create policy cycles_update on public.pair_cycles
+  for update using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  ) with check (
+    start_day <= to_char(now() at time zone 'utc', 'YYYY-MM-DD')
+    and exists (
+      select 1 from public.pairs p
+      where p.id = pair_id
+        and (p.user_a = auth.uid() or p.user_b = auth.uid())
+        and (subject = p.user_a or subject = p.user_b)
+    )
+  );
+drop policy if exists cycles_delete on public.pair_cycles;
+create policy cycles_delete on public.pair_cycles
+  for delete using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
 
 -- No realtime publication for these tables on purpose: proof rows can carry
 -- megabyte photo payloads, which realtime would try to ship whole. The app

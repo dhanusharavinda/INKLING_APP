@@ -191,6 +191,9 @@ export interface PairHabit {
   title: string;
   emoji: string;
   remindAt: string; // 'HH:MM' on the owner's clock, '' = no reminder
+  // Retiring a promise takes BOTH thumbs: the first hold only asks, and the
+  // partner's hold is what actually removes it. null when nobody has asked.
+  retireRequestedBy: string | null;
   createdAt: number;
 }
 
@@ -213,6 +216,24 @@ export interface HabitProofMeta {
 export interface PairPact {
   signedA: number | null;
   signedB: number | null;
+}
+
+// ---------- cycle tracking ----------
+
+// One logged period. Either partner may create or edit it (he can log it
+// when she is too wiped out to), but it always belongs to one subject.
+export interface CycleEntry {
+  id: string;
+  pairId: string;
+  subject: string; // whose cycle this is
+  loggedBy: string;
+  startDay: string; // YYYY-MM-DD (UTC)
+  endDay: string | null; // null while it is still going
+  flow: string; // spotting | light | medium | heavy
+  symptoms: string[];
+  mood: string;
+  note: string;
+  createdAt: number;
 }
 
 // Rock paper scissors: choose in secret, reveal together.

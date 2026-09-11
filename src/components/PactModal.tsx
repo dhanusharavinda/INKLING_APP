@@ -1,196 +1,17 @@
-import React, { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  Vibration,
-  View,
-} from 'react-native';
-import Svg, { Circle, Path } from 'react-native-svg';
+import React, { useEffect, useState } from 'react';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { PairHabit } from '../types';
 import { serif } from '../theme';
 import { friendlyCloudError } from '../cloud';
+import FingerprintSeal from './FingerprintSeal';
 
 // The Better-for-Love pact: a tiny ceremony. Each person seals the promise by
-// holding a thumb on the fingerprint for 5 whole seconds; the ink fills in as
-// they hold, and letting go early lets the print fade back out.
-
-const HOLD_MS = 5000;
-const RING_R = 54;
-const RING_C = 2 * Math.PI * RING_R;
-
-// A stylized thumbprint: nested ridge arcs plus a little core.
-const PRINT_PATHS = [
-  'M 34 86 C 29 62, 34 38, 60 36 C 86 38, 91 62, 86 86',
-  'M 40 88 C 36 64, 40 45, 60 43 C 80 45, 84 64, 80 88',
-  'M 46 90 C 42 67, 46 52, 60 50 C 74 52, 78 67, 74 90',
-  'M 52 90 C 49 71, 51 58, 60 57 C 69 58, 71 71, 68 90',
-  'M 60 66 C 64 68, 65 76, 61 82 C 57 79, 56 70, 60 66',
-];
+// holding a thumb on the fingerprint for 5 whole seconds (see FingerprintSeal).
 
 const PINK = '#F2789F';
 const INK_BG = '#2D2433';
 const SOFT = '#C9BBD4';
 const FAINT = '#6B5A76';
-
-function stageLine(progress: number, signedNow: boolean): string {
-  if (signedNow) return 'sealed ♡';
-  if (progress <= 0) return 'press & hold for 5 seconds';
-  if (progress < 0.25) return 'pressing ♡';
-  if (progress < 0.5) return 'keep holding…';
-  if (progress < 0.75) return 'almost there…';
-  return 'sealing it…';
-}
-
-function FingerprintSeal({
-  onComplete,
-  busy,
-  signed,
-}: {
-  onComplete: () => void;
-  busy: boolean;
-  signed: boolean;
-}) {
-  const [progress, setProgress] = useState(0);
-  const [hint, setHint] = useState<string | null>(null);
-  const holding = useRef(false);
-  const startAt = useRef(0);
-  const raf = useRef<number | null>(null);
-  const lastSet = useRef(0);
-  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const done = useRef(false);
-
-  useEffect(
-    () => () => {
-      holding.current = false;
-      if (raf.current !== null) cancelAnimationFrame(raf.current);
-      if (hintTimer.current) clearTimeout(hintTimer.current);
-    },
-    []
-  );
-
-  // a failed signing attempt hands the thumb another chance
-  useEffect(() => {
-    if (!busy && !signed && done.current) {
-      done.current = false;
-      lastSet.current = 0;
-      setProgress(0);
-    }
-  }, [busy, signed]);
-
-  const tick = () => {
-    if (!holding.current) return;
-    const p = Math.min(1, (Date.now() - startAt.current) / HOLD_MS);
-    if (p - lastSet.current >= 0.02 || p >= 1) {
-      lastSet.current = p;
-      setProgress(p);
-    }
-    if (p >= 1) {
-      holding.current = false;
-      if (!done.current) {
-        done.current = true;
-        try {
-          Vibration.vibrate([0, 60, 50, 140]);
-        } catch {}
-        onComplete();
-      }
-      return;
-    }
-    raf.current = requestAnimationFrame(tick);
-  };
-
-  const start = () => {
-    if (busy || signed || done.current) return;
-    holding.current = true;
-    startAt.current = Date.now();
-    lastSet.current = 0;
-    setHint(null);
-    try {
-      Vibration.vibrate(15);
-    } catch {}
-    tick();
-  };
-
-  const stop = () => {
-    if (!holding.current) return;
-    holding.current = false;
-    if (raf.current !== null) cancelAnimationFrame(raf.current);
-    const held = (Date.now() - startAt.current) / HOLD_MS;
-    lastSet.current = 0;
-    setProgress(0);
-    if (held > 0.12) {
-      setHint('hold it like you hold them: all 5 seconds ♡');
-      if (hintTimer.current) clearTimeout(hintTimer.current);
-      hintTimer.current = setTimeout(() => setHint(null), 2600);
-    }
-  };
-
-  const p = signed ? 1 : progress;
-  const inkOpacity = signed ? 1 : 0.18 + 0.82 * p;
-
-  return (
-    <View style={{ alignItems: 'center' }}>
-      <Pressable
-        onPressIn={start}
-        onPressOut={stop}
-        disabled={busy || signed}
-        style={styles.sealPress}
-      >
-        <Svg width={168} height={168} viewBox="0 0 120 120">
-          {/* soft glow that warms up while holding */}
-          <Circle cx={60} cy={60} r={48} fill={PINK} opacity={0.06 + 0.2 * p} />
-          {/* progress ring */}
-          <Circle cx={60} cy={60} r={RING_R} stroke={FAINT} strokeWidth={3} fill="none" opacity={0.5} />
-          <Circle
-            cx={60}
-            cy={60}
-            r={RING_R}
-            stroke={PINK}
-            strokeWidth={4}
-            fill="none"
-            strokeLinecap="round"
-            strokeDasharray={`${RING_C}`}
-            strokeDashoffset={RING_C * (1 - p)}
-            transform="rotate(-90 60 60)"
-          />
-          {/* the print itself: faint ridges, inked over as you hold */}
-          {PRINT_PATHS.map((d, i) => (
-            <Path
-              key={`b${i}`}
-              d={d}
-              stroke={FAINT}
-              strokeWidth={3.4}
-              strokeLinecap="round"
-              fill="none"
-              opacity={0.55}
-            />
-          ))}
-          {PRINT_PATHS.map((d, i) => (
-            <Path
-              key={`p${i}`}
-              d={d}
-              stroke={PINK}
-              strokeWidth={3.4}
-              strokeLinecap="round"
-              fill="none"
-              opacity={inkOpacity}
-            />
-          ))}
-        </Svg>
-        {busy && (
-          <View style={styles.sealBusy}>
-            <ActivityIndicator color={PINK} />
-          </View>
-        )}
-      </Pressable>
-      <Text style={styles.sealStage}>{busy ? 'inking it in…' : stageLine(p, signed)}</Text>
-      {hint && <Text style={styles.sealHint}>{hint}</Text>}
-    </View>
-  );
-}
 
 interface Props {
   visible: boolean;
@@ -308,7 +129,7 @@ export default function PactModal({
             </View>
           </View>
 
-          <FingerprintSeal onComplete={handleComplete} busy={busy} signed={iSigned} />
+          <FingerprintSeal onComplete={handleComplete} busy={busy} done={iSigned} />
 
           {bothSigned ? (
             <Text style={styles.sealed}>
@@ -384,10 +205,6 @@ const styles = StyleSheet.create({
   signState: { fontSize: 11.5, fontWeight: '700', color: FAINT, textAlign: 'center' },
   signStateDone: { color: '#8FD9A8' },
   signHeart: { fontSize: 18 },
-  sealPress: { alignItems: 'center', justifyContent: 'center' },
-  sealBusy: { position: 'absolute' },
-  sealStage: { fontSize: 13.5, fontWeight: '800', color: '#F6EDF2', marginTop: 8 },
-  sealHint: { fontSize: 12, color: PINK, fontWeight: '700', marginTop: 6 },
   sealed: {
     fontSize: 13.5,
     fontWeight: '800',

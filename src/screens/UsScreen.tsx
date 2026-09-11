@@ -19,6 +19,7 @@ import * as ImagePicker from 'expo-image-picker';
 import {
   CanvasItem,
   CanvasText,
+  CycleEntry,
   HabitProofMeta,
   LoveNote,
   PairEvent,
@@ -53,6 +54,7 @@ import {
   onGameChange,
   onLoveNotesChange,
   deleteSnap,
+  fetchCycles,
   fetchHabits,
   fetchPact,
   fetchProofMeta,
@@ -108,6 +110,9 @@ import DrawingCanvas, { TraceImage } from '../components/DrawingCanvas';
 import EmojiRain from '../components/EmojiRain';
 import { Button, Card, confirmAsk, ProgressBar } from '../components/ui';
 import HabitsSection from './HabitsSection';
+import CycleSection from './CycleSection';
+import FingerprintSeal from '../components/FingerprintSeal';
+import { cycleNow, cycleStats, dayKeyPlus, periodDayFor, upcomingStarts } from '../cycle';
 
 interface Props {
   userId: string;
@@ -116,7 +121,7 @@ interface Props {
   cloudEnabled: boolean;
 }
 
-type SubTab = 'doodle' | 'together' | 'habits' | 'quest' | 'games' | 'mem';
+type SubTab = 'doodle' | 'together' | 'habits' | 'cycle' | 'quest' | 'games' | 'mem';
 type GameTab = 'xo' | 'rps';
 
 const RPS_META: { key: 'rock' | 'paper' | 'scissors'; emoji: string }[] = [
@@ -140,6 +145,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   const [habits, setHabits] = useState<PairHabit[]>([]);
   const [proofMeta, setProofMeta] = useState<HabitProofMeta[]>([]);
   const [pact, setPact] = useState<PairPact | null>(null);
+  const [cycles, setCycles] = useState<CycleEntry[]>([]);
   const [notes, setNotes] = useState<LoveNote[]>([]);
   const [lastReaction, setLastReaction] = useState<PairEvent | null>(null);
   const [lastLink, setLastLink] = useState<PairEvent | null>(null);
@@ -178,6 +184,8 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   // pairing UI
   const [joinCode, setJoinCode] = useState('');
   const [pairBusy, setPairBusy] = useState(false);
+  const [unlinkOpen, setUnlinkOpen] = useState(false);
+  const [unlinkBusy, setUnlinkBusy] = useState(false);
 
   // link sharing + question composer
   const [linkModal, setLinkModal] = useState(false);
@@ -206,7 +214,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       if (p && p.userB) {
         const authorIds = [p.userA, p.userB].filter(Boolean) as string[];
         const amA = p.userA === userId;
-        const [cs, ms, g, x, ns, lr, ll, rp, hb, pm, pc] = await Promise.all([
+        const [cs, ms, g, x, ns, lr, ll, rp, hb, pm, pc, cy] = await Promise.all([
           fetchCanvas(p.id),
           fetchLatestMoods(p.id, authorIds),
           fetchPairGame(p.id),
@@ -218,6 +226,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
           fetchHabits(p.id),
           fetchProofMeta(p.id),
           fetchPact(p.id),
+          fetchCycles(p.id),
         ]);
         setItems(cs);
         setMoods(ms);
@@ -230,6 +239,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         setHabits(hb);
         setProofMeta(pm);
         setPact(pc);
+        setCycles(cy);
       } else {
         setItems([]);
         setMoods([]);
@@ -242,6 +252,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         setHabits([]);
         setProofMeta([]);
         setPact(null);
+        setCycles([]);
       }
     } catch (e) {
       setError(friendlyCloudError(e));
@@ -302,7 +313,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         const todayK = utcDayKey();
         const tickStart = Date.now();
         const wantAcct = acctTick.current++ % 5 === 0;
-        const [cs, ms, g, x, ns, lr, ll, rp, freshPair, hb, tm, pc] = await Promise.all([
+        const [cs, ms, g, x, ns, lr, ll, rp, freshPair, hb, tm, pc, cy] = await Promise.all([
           fetchCanvas(pair.id),
           fetchLatestMoods(pair.id, authorIds),
           fetchPairGame(pair.id),
@@ -315,6 +326,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
           wantAcct ? fetchHabits(pair.id) : Promise.resolve(undefined),
           wantAcct ? fetchProofMeta(pair.id, todayK) : Promise.resolve(undefined),
           wantAcct ? fetchPact(pair.id) : Promise.resolve(undefined),
+          wantAcct ? fetchCycles(pair.id) : Promise.resolve(undefined),
         ]);
         // unlink requests (and the unlink itself) land through here
         setPair((prev) => {
@@ -358,7 +370,12 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         if (hb !== undefined && tm !== undefined && pc !== undefined && acctStamp.current < tickStart) {
           setHabits((prev) => {
             const key = (list: PairHabit[]) =>
-              list.map((h) => `${h.id}:${h.title}:${h.emoji}:${h.remindAt}:${h.owner}`).join('|');
+              list
+                .map(
+                  (h) =>
+                    `${h.id}:${h.title}:${h.emoji}:${h.remindAt}:${h.owner}:${h.retireRequestedBy ?? ''}`
+                )
+                .join('|');
             return key(prev) === key(hb) ? prev : hb;
           });
           setProofMeta((prev) => {
@@ -372,6 +389,13 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
               ? prev
               : pc
           );
+          if (cy !== undefined) {
+            setCycles((prev) => {
+              const key = (list: CycleEntry[]) =>
+                list.map((c) => `${c.id}:${c.startDay}:${c.endDay ?? ''}:${c.flow}`).join('|');
+              return key(prev) === key(cy) ? prev : cy;
+            });
+          }
         }
         setNotes((prev) => {
           const key = (list: LoveNote[]) =>
@@ -485,35 +509,50 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     setHabits([]);
     setProofMeta([]);
     setPact(null);
+    setCycles([]);
   }, []);
 
-  // Unlinking takes both hearts: the first ask only marks a request, and the
-  // pair is gone only when the other person confirms. A pending invite (no
-  // partner yet) is deleted straight away.
+  // Unlinking takes both hearts AND both thumbs: the first fingerprint only
+  // marks a request, and the pair is gone only once the other person holds
+  // theirs too. A pending invite (no partner yet) is just mine, so a plain
+  // confirm is enough to cancel it.
   function handleLeave() {
-    const confirming = !!pair?.unlinkRequestedBy && pair.unlinkRequestedBy !== userId;
-    confirmAsk(
-      confirming ? `Unlink from ${partnerName}?` : paired ? 'Ask to unlink?' : 'Cancel the invite?',
-      confirming
-        ? 'They asked to unlink. Confirming deletes your shared doodle and progress for both of you.'
-        : paired
-        ? `Nothing is deleted yet: ${partnerName} has to agree before you two are unlinked.`
-        : 'Your invite code will stop working.',
-      async () => {
-        try {
-          const outcome = await requestUnlink();
-          if (outcome === 'requested') {
-            const fresh = await fetchMyPair();
-            setPair(fresh);
-          } else {
+    if (!paired) {
+      confirmAsk(
+        'Cancel the invite?',
+        'Your invite code will stop working.',
+        async () => {
+          try {
+            await requestUnlink();
             clearPairState();
+          } catch (e) {
+            setError(friendlyCloudError(e));
           }
-        } catch (e) {
-          setError(friendlyCloudError(e));
-        }
-      },
-      confirming ? 'Unlink' : paired ? 'Ask to unlink' : 'Cancel invite'
-    );
+        },
+        'Cancel invite'
+      );
+      return;
+    }
+    setUnlinkOpen(true);
+  }
+
+  async function handleUnlinkHold() {
+    if (unlinkBusy) return;
+    setUnlinkBusy(true);
+    try {
+      const outcome = await requestUnlink();
+      setUnlinkOpen(false);
+      if (outcome === 'requested') {
+        const fresh = await fetchMyPair();
+        setPair(fresh);
+      } else {
+        clearPairState();
+      }
+    } catch (e) {
+      setError(friendlyCloudError(e));
+    } finally {
+      setUnlinkBusy(false);
+    }
   }
 
   async function handleKeepUs() {
@@ -907,6 +946,43 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     setMemMonth((m) => new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + delta, 1)));
   };
 
+  // ---------- one calendar for everything: snaps, promises, her cycle ----------
+
+  // day -> how many promises were kept, skipped, and existed at all that day
+  const habitDays = useMemo(() => {
+    const map = new Map<string, { done: number; skipped: number }>();
+    for (const p of proofMeta) {
+      const cell = map.get(p.day) ?? { done: 0, skipped: 0 };
+      if (p.kind === 'photo') cell.done += 1;
+      else cell.skipped += 1;
+      map.set(p.day, cell);
+    }
+    return map;
+  }, [proofMeta]);
+
+  const habitBirthdays = useMemo(() => habits.map((h) => utcDayKey(h.createdAt)), [habits]);
+  const habitsAliveOn = useCallback(
+    (day: string) => habitBirthdays.filter((b) => b <= day).length,
+    [habitBirthdays]
+  );
+
+  // the cycle being tracked (if any), and the days it paints on the calendar
+  const cycleSubject = cycles.length > 0 ? cycles[0].subject : null;
+  const subjectCycles = useMemo(
+    () => (cycleSubject ? cycles.filter((c) => c.subject === cycleSubject) : []),
+    [cycles, cycleSubject]
+  );
+  const cStats = useMemo(() => cycleStats(subjectCycles), [subjectCycles]);
+  const cNow = useMemo(() => cycleNow(subjectCycles, cStats), [subjectCycles, cStats]);
+  // the next two expected periods, so the month view is useful looking ahead
+  const predictedDays = useMemo(() => {
+    const set = new Set<string>();
+    for (const start of upcomingStarts(cNow, cStats, 2)) {
+      for (let i = 0; i < cStats.periodLength; i++) set.add(dayKeyPlus(start, i));
+    }
+    return set;
+  }, [cNow, cStats]);
+
   async function handleDeleteSnap(id: string) {
     setSnaps((prev) => prev.filter((s) => s.id !== id));
     try {
@@ -1014,14 +1090,16 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   const refreshAccountability = useCallback(async () => {
     if (!pair || !pair.userB) return;
     try {
-      const [hb, pm, pc] = await Promise.all([
+      const [hb, pm, pc, cy] = await Promise.all([
         fetchHabits(pair.id),
         fetchProofMeta(pair.id),
         fetchPact(pair.id),
+        fetchCycles(pair.id),
       ]);
       setHabits(hb);
       setProofMeta(pm);
       setPact(pc);
+      setCycles(cy);
       // a poll that started before this refresh may not overwrite it
       acctStamp.current = Date.now();
     } catch (e) {
@@ -1032,7 +1110,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   // opening the tab re-pulls the full proof history (the poll only carries
   // today's), so streak strips are never stale
   useEffect(() => {
-    if (subTab === 'habits') refreshAccountability();
+    if (subTab === 'habits' || subTab === 'cycle' || subTab === 'mem') refreshAccountability();
   }, [subTab, refreshAccountability]);
 
   // keep the local nudges honest: a heads-up 30 min before each of MY habits,
@@ -1289,6 +1367,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                   { key: 'doodle', label: '🎨' },
                   { key: 'together', label: '🐦' },
                   { key: 'habits', label: '💪' },
+                  { key: 'cycle', label: '🌸' },
                   { key: 'quest', label: '💌' },
                   { key: 'games', label: '🎮' },
                   { key: 'mem', label: '📆' },
@@ -1434,6 +1513,19 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                 habits={habits}
                 proofMeta={proofMeta}
                 pact={pact}
+                onRefresh={refreshAccountability}
+                onError={setError}
+                pour={pour}
+              />
+            )}
+
+            {subTab === 'cycle' && (
+              <CycleSection
+                pair={pair}
+                userId={userId}
+                myName={myName}
+                partnerName={partnerName}
+                cycles={cycles}
                 onRefresh={refreshAccountability}
                 onError={setError}
                 pour={pour}
@@ -1665,30 +1757,126 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                   }).map((_, i) => {
                     const dayKey = `${memPrefix}-${String(i + 1).padStart(2, '0')}`;
                     const count = snapCounts.get(dayKey) ?? 0;
-                    const has = count > 0;
+                    const hs = habitDays.get(dayKey);
+                    const alive = habitsAliveOn(dayKey);
+                    const bled = !!periodDayFor(subjectCycles, dayKey, cStats.periodLength);
+                    const predicted = !bled && predictedDays.has(dayKey);
+                    const allKept = !!hs && alive > 0 && hs.done >= alive;
                     return (
                       <Pressable
                         key={dayKey}
-                        onPress={() => has && setMemDay(memDay === dayKey ? null : dayKey)}
+                        onPress={() => setMemDay(memDay === dayKey ? null : dayKey)}
                         style={[
                           styles.memCell,
-                          has && styles.memCellHas,
+                          count > 0 && styles.memCellHas,
+                          bled && styles.memCellPeriod,
+                          predicted && styles.memCellPredicted,
+                          dayKey === today && styles.memCellToday,
                           memDay === dayKey && styles.memCellActive,
                         ]}
                       >
-                        <Text style={[styles.memCellText, has && { color: '#D6336C' }]}>
+                        <Text
+                          style={[
+                            styles.memCellText,
+                            count > 0 && { color: '#D6336C' },
+                            bled && { color: '#C2334F' },
+                          ]}
+                        >
                           {i + 1}
                         </Text>
-                        {has && (
-                          <Text style={{ fontSize: 8 }}>
-                            💗{count > 1 ? `×${count}` : ''}
-                          </Text>
-                        )}
+                        <View style={styles.memDots}>
+                          {count > 0 && <View style={[styles.memDot, styles.memDotSnap]} />}
+                          {!!hs && hs.done > 0 && (
+                            <View
+                              style={[
+                                styles.memDot,
+                                allKept ? styles.memDotAllKept : styles.memDotHabit,
+                              ]}
+                            />
+                          )}
+                          {!!hs && hs.skipped > 0 && <View style={[styles.memDot, styles.memDotSkip]} />}
+                        </View>
                       </Pressable>
                     );
                   })}
                 </View>
-                {snaps.length === 0 && (
+
+                <View style={styles.memLegend}>
+                  <View style={[styles.memDot, styles.memDotSnap]} />
+                  <Text style={styles.memLegendText}>memory</Text>
+                  <View style={[styles.memDot, styles.memDotAllKept]} />
+                  <Text style={styles.memLegendText}>all kept</Text>
+                  <View style={[styles.memDot, styles.memDotSkip]} />
+                  <Text style={styles.memLegendText}>skip</Text>
+                  {!!cycleSubject && (
+                    <>
+                      <View style={[styles.memDot, styles.memDotPeriod]} />
+                      <Text style={styles.memLegendText}>period</Text>
+                    </>
+                  )}
+                </View>
+
+                {/* the selected day, in full */}
+                {memDay && (
+                  <View style={styles.dayPanel}>
+                    <Text style={styles.dayPanelTitle}>
+                      {new Date(`${memDay}T12:00:00Z`).toLocaleDateString([], {
+                        weekday: 'long',
+                        day: 'numeric',
+                        month: 'long',
+                        timeZone: 'UTC',
+                      })}
+                    </Text>
+                    {(() => {
+                      const bled = periodDayFor(subjectCycles, memDay, cStats.periodLength);
+                      if (bled) {
+                        const dayNo = Math.max(
+                          1,
+                          Math.round(
+                            (Date.parse(`${memDay}T12:00:00Z`) -
+                              Date.parse(`${bled.startDay}T12:00:00Z`)) /
+                              86400000
+                          ) + 1
+                        );
+                        return (
+                          <Text style={styles.dayCycleLine}>
+                            🌹 day {dayNo} of{' '}
+                            {cycleSubject === userId ? 'your' : `${partnerName}'s`} period
+                            {bled.flow ? ` · ${bled.flow}` : ''}
+                          </Text>
+                        );
+                      }
+                      if (predictedDays.has(memDay))
+                        return <Text style={styles.dayCycleLine}>🌸 period expected around here</Text>;
+                      return null;
+                    })()}
+                    {habits.map((h) => {
+                      const p = proofMeta.find((x) => x.habitId === h.id && x.day === memDay);
+                      if (!p) return null;
+                      return (
+                        <Text key={h.id} style={styles.dayHabitLine}>
+                          {h.emoji} {h.title} ·{' '}
+                          {p.kind === 'photo' ? (
+                            <Text style={{ color: '#2F9E44' }}>kept 📸</Text>
+                          ) : (
+                            <Text style={{ color: '#A97B1D' }}>skipped: {p.skipReason}</Text>
+                          )}
+                          {p.caption ? ` · “${p.caption}”` : ''}
+                        </Text>
+                      );
+                    })}
+                    {!habits.some((h) =>
+                      proofMeta.some((x) => x.habitId === h.id && x.day === memDay)
+                    ) &&
+                      !periodDayFor(subjectCycles, memDay, cStats.periodLength) &&
+                      !predictedDays.has(memDay) &&
+                      (snapCounts.get(memDay) ?? 0) === 0 && (
+                        <Text style={styles.dayEmptyLine}>a quiet day, nothing logged ♡</Text>
+                      )}
+                  </View>
+                )}
+
+                {snaps.length === 0 && !memDay && (
                   <Text style={styles.gameHint}>
                     no memories this month yet · 📸 snap the doodle page to keep one forever
                   </Text>
@@ -1734,6 +1922,46 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         {error && <Text style={styles.error}>{error}</Text>}
         <View style={{ height: 110 }} />
       </ScrollView>
+
+      {/* unlinking: both thumbs, never a stray tap */}
+      <Modal
+        visible={unlinkOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setUnlinkOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => !unlinkBusy && setUnlinkOpen(false)}>
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Text style={styles.modalTitle}>
+              {pair?.unlinkRequestedBy && pair.unlinkRequestedBy !== userId
+                ? `agree to unlink from ${partnerName}?`
+                : `ask to unlink from ${partnerName}?`}
+            </Text>
+            <Text style={styles.unlinkBody}>
+              {pair?.unlinkRequestedBy && pair.unlinkRequestedBy !== userId
+                ? `${partnerName} already held their thumb. Yours ends it: the doodle page, the streak, every promise, memory and snap you two built goes away for both of you, and it cannot be undone.`
+                : `Nothing is deleted yet. ${partnerName} has to hold their thumb too, and either of you can call it off. Hold yours only if you really mean it.`}
+            </Text>
+            <FingerprintSeal
+              onComplete={handleUnlinkHold}
+              busy={unlinkBusy}
+              tone="light"
+              accent="#E25C5C"
+              size={148}
+              idleLabel="press & hold for 5 seconds"
+              busyLabel="letting go…"
+              releaseHint="all five seconds, so this never happens by accident"
+            />
+            <Pressable
+              onPress={() => setUnlinkOpen(false)}
+              style={{ marginTop: 14, alignItems: 'center' }}
+              hitSlop={6}
+            >
+              <Text style={styles.stayText}>never mind, we stay ♡</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* link composer */}
       <Modal
@@ -1998,12 +2226,12 @@ const styles = StyleSheet.create({
     backgroundColor: palette.line,
     borderRadius: 999,
     padding: 3,
-    gap: 4,
+    gap: 2,
     marginTop: 14,
   },
   subTabBtn: { flex: 1, paddingVertical: 8, borderRadius: 999, alignItems: 'center' },
   subTabBtnActive: { backgroundColor: palette.card },
-  subTabText: { fontSize: 16 },
+  subTabText: { fontSize: 15 },
   canvasHint: {
     fontSize: 11.5,
     color: palette.inkFaint,
@@ -2223,8 +2451,42 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   memCellHas: { backgroundColor: '#FDE8EF' },
-  memCellActive: { borderWidth: 2, borderColor: '#F2789F' },
+  memCellPeriod: { backgroundColor: '#FBD9E0' },
+  memCellPredicted: { borderWidth: 1, borderStyle: 'dashed', borderColor: '#E8637C' },
+  memCellToday: { borderWidth: 1.5, borderColor: palette.inkFaint },
+  memCellActive: { borderWidth: 2, borderColor: '#F2789F', borderStyle: 'solid' },
   memCellText: { fontSize: 11, fontWeight: '700', color: palette.inkSoft },
+  memDots: { flexDirection: 'row', gap: 2, marginTop: 2, height: 5 },
+  memDot: { width: 5, height: 5, borderRadius: 3 },
+  memDotSnap: { backgroundColor: '#D6336C' },
+  memDotHabit: { backgroundColor: '#F2789F' },
+  memDotAllKept: { backgroundColor: '#2F9E44' },
+  memDotSkip: { backgroundColor: '#F5B941' },
+  memDotPeriod: { backgroundColor: '#C2334F' },
+  memLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 12,
+  },
+  memLegendText: { fontSize: 10.5, color: palette.inkFaint, marginRight: 6 },
+  dayPanel: {
+    marginTop: 14,
+    backgroundColor: palette.bg,
+    borderRadius: 16,
+    padding: 14,
+  },
+  dayPanelTitle: { fontFamily: serif, fontSize: 15, fontWeight: '700', color: palette.ink },
+  dayCycleLine: { fontSize: 12.5, fontWeight: '700', color: '#C2334F', marginTop: 8 },
+  dayHabitLine: { fontSize: 12.5, color: palette.inkSoft, marginTop: 6, lineHeight: 18 },
+  dayEmptyLine: {
+    fontSize: 12.5,
+    color: palette.inkFaint,
+    fontStyle: 'italic',
+    marginTop: 8,
+  },
   memSnap: {
     marginTop: 14,
     backgroundColor: palette.bg,
@@ -2272,6 +2534,14 @@ const styles = StyleSheet.create({
   },
   modalCard: { backgroundColor: palette.card, borderRadius: 20, padding: 18 },
   modalTitle: { fontSize: 16, fontWeight: '800', color: palette.ink },
+  unlinkBody: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: palette.inkSoft,
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  stayText: { fontSize: 13, fontWeight: '800', color: '#D6336C' },
   modalSub: { fontSize: 12.5, color: palette.inkSoft, marginTop: 2, marginBottom: 12 },
   error: {
     marginTop: 14,

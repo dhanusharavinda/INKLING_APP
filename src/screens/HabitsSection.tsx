@@ -17,12 +17,13 @@ import { HabitProofMeta, PairHabit, PairInfo, PairPact } from '../types';
 import { palette, radius, serif } from '../theme';
 import {
   addHabit,
-  deleteHabit,
+  cancelRetireHabit,
   deleteProof,
   fetchProofPhoto,
   friendlyCloudError,
   logHabitProof,
   reactToProof,
+  retireHabit,
   signPact,
 } from '../cloud';
 import {
@@ -40,6 +41,7 @@ import { makeId } from '../storage';
 import { Button, Card, confirmAsk } from '../components/ui';
 import PactModal from '../components/PactModal';
 import ProofCamera from '../components/ProofCamera';
+import FingerprintSeal from '../components/FingerprintSeal';
 
 // The accountability corner: promises (habits) either partner can create for
 // either of the two, proven daily with a photo taken RIGHT NOW on the camera
@@ -93,6 +95,7 @@ export default function HabitsSection({
   const [composeOpen, setComposeOpen] = useState(false);
   const [forMe, setForMe] = useState(true);
   const [emoji, setEmoji] = useState('💪');
+  const [customEmoji, setCustomEmoji] = useState(''); // any emoji they type in
   const [title, setTitle] = useState('');
   const [remindChoice, setRemindChoice] = useState<string>(''); // '' | preset | 'custom'
   const [customH, setCustomH] = useState(18);
@@ -110,6 +113,9 @@ export default function HabitsSection({
   // props, so a partner's retake or reaction can never leave a stale copy
   const [viewerId, setViewerId] = useState<string | null>(null);
   const [viewerPhoto, setViewerPhoto] = useState<string | null | undefined>(undefined);
+
+  // retiring a promise (needs both fingerprints)
+  const [retireFor, setRetireFor] = useState<PairHabit | null>(null);
 
   // pact ceremony
   const [pactOpen, setPactOpen] = useState(false);
@@ -161,6 +167,7 @@ export default function HabitsSection({
   function resetComposer() {
     setForMe(true);
     setEmoji('💪');
+    setCustomEmoji('');
     setTitle('');
     setRemindChoice('');
     setCustomH(18);
@@ -175,13 +182,16 @@ export default function HabitsSection({
     }
     const remindAt =
       remindChoice === 'custom' ? `${pad2(customH)}:${pad2(customM)}` : remindChoice;
+    // a typed emoji wins over the quick picks; [...str] keeps multi-codepoint
+    // emoji (skin tones, ZWJ families) in one piece where .slice would tear them
+    const typed = [...customEmoji.trim()].slice(0, 2).join('');
     setBusy('compose');
     try {
       await addHabit(pair.id, {
         id: makeId(),
         owner: forMe ? userId : partnerId,
         title: t.slice(0, 40),
-        emoji,
+        emoji: typed || emoji,
         remindAt,
       });
       setComposeOpen(false);
@@ -195,20 +205,34 @@ export default function HabitsSection({
     }
   }
 
-  function handleRemoveHabit(h: PairHabit) {
-    confirmAsk(
-      `Remove "${h.title}"?`,
-      'The promise and its whole proof history disappear for both of you.',
-      async () => {
-        try {
-          await deleteHabit(h.id);
-          await onRefresh();
-        } catch (e) {
-          onError(friendlyCloudError(e));
-        }
-      },
-      'Remove'
-    );
+  // Retiring takes both thumbs: my hold only asks, theirs is what removes it.
+  async function handleRetireHold() {
+    const h = retireFor;
+    // only guard against a double-fire of THIS action: bailing on any other
+    // in-flight work would leave the seal inked in with nothing happening
+    if (!h || busy === 'retire') return;
+    setBusy('retire');
+    try {
+      const outcome = await retireHabit(h.id);
+      setRetireFor(null);
+      await onRefresh();
+      if (outcome === 'deleted') pour('🕊️');
+      else pour('🖋️');
+    } catch (e) {
+      onError(friendlyCloudError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleKeepHabit(h: PairHabit) {
+    try {
+      await cancelRetireHabit(h.id);
+      await onRefresh();
+      pour('💗');
+    } catch (e) {
+      onError(friendlyCloudError(e));
+    }
   }
 
   // Camera ONLY. There is deliberately no gallery path for proofs: a snap is
@@ -395,6 +419,8 @@ export default function HabitsSection({
     const proof = todayProofByHabit.get(h.id);
     const streak = habitStreak(index.get(h.id));
     const rowBusy = busy === h.id;
+    const retiring = !!h.retireRequestedBy;
+    const iAsked = h.retireRequestedBy === userId;
     return (
       <View key={h.id} style={styles.habitRow}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -407,10 +433,32 @@ export default function HabitsSection({
             </Text>
           </View>
           {weekStrip(h)}
-          <Pressable onPress={() => handleRemoveHabit(h)} hitSlop={8} style={{ marginLeft: 8 }}>
-            <Text style={styles.removeX}>✕</Text>
-          </Pressable>
+          {!retiring && (
+            <Pressable onPress={() => setRetireFor(h)} hitSlop={8} style={{ marginLeft: 8 }}>
+              <Text style={styles.removeX}>✕</Text>
+            </Pressable>
+          )}
         </View>
+
+        {retiring && (
+          <View style={styles.retireBanner}>
+            <Text style={styles.retireText}>
+              {iAsked
+                ? `you asked to retire this 🖋️ it stays until ${partnerName} holds their thumb too`
+                : `${partnerName} wants to retire this promise 🖋️ it goes only if you agree`}
+            </Text>
+            <View style={styles.retireBtns}>
+              <Pressable onPress={() => handleKeepHabit(h)} style={styles.keepBtn}>
+                <Text style={styles.keepBtnText}>keep it ♡</Text>
+              </Pressable>
+              {!iAsked && (
+                <Pressable onPress={() => setRetireFor(h)} style={styles.agreeBtn}>
+                  <Text style={styles.agreeBtnText}>hold to agree</Text>
+                </Pressable>
+              )}
+            </View>
+          </View>
+        )}
         <View style={styles.habitActions}>
           {proof ? (
             <Pressable style={styles.doneChip} onPress={() => setViewerId(proof.id)}>
@@ -571,16 +619,34 @@ export default function HabitsSection({
               maxLength={40}
             />
             <View style={styles.emojiRow}>
-              {HABIT_EMOJIS.map((e) => (
-                <Pressable
-                  key={e}
-                  onPress={() => setEmoji(e)}
-                  style={[styles.emojiPick, emoji === e && styles.emojiPickActive]}
-                >
-                  <Text style={{ fontSize: 18 }}>{e}</Text>
-                </Pressable>
-              ))}
+              {HABIT_EMOJIS.map((e) => {
+                const on = !customEmoji.trim() && emoji === e;
+                return (
+                  <Pressable
+                    key={e}
+                    onPress={() => {
+                      setEmoji(e);
+                      setCustomEmoji('');
+                    }}
+                    style={[styles.emojiPick, on && styles.emojiPickActive]}
+                  >
+                    <Text style={{ fontSize: 18 }}>{e}</Text>
+                  </Pressable>
+                );
+              })}
+              <TextInput
+                style={[styles.emojiPick, styles.emojiInput, !!customEmoji.trim() && styles.emojiPickActive]}
+                placeholder="＋"
+                placeholderTextColor={palette.inkFaint}
+                value={customEmoji}
+                onChangeText={setCustomEmoji}
+                maxLength={4}
+                autoCorrect={false}
+              />
             </View>
+            <Text style={styles.emojiHint}>
+              pick one, or tap ＋ and type any emoji from your keyboard
+            </Text>
             <Text style={styles.fieldLabel}>remind at (heads-up lands 30 min before)</Text>
             <View style={styles.timeRow}>
               <Pressable
@@ -723,6 +789,55 @@ export default function HabitsSection({
             >
               <Text style={styles.retakeText}>↻ retake</Text>
             </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* retiring a promise: one thumb asks, the other agrees */}
+      <Modal
+        visible={!!retireFor}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRetireFor(null)}
+      >
+        <Pressable style={styles.backdrop} onPress={() => busy !== 'retire' && setRetireFor(null)}>
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            {retireFor && (
+              <>
+                <Text style={styles.modalTitle}>
+                  {retireFor.retireRequestedBy && retireFor.retireRequestedBy !== userId
+                    ? 'agree to retire this promise?'
+                    : 'retire this promise?'}
+                </Text>
+                <Text style={styles.modalSub}>
+                  {retireFor.emoji} {retireFor.title}
+                </Text>
+                <Text style={styles.retireBody}>
+                  {retireFor.retireRequestedBy && retireFor.retireRequestedBy !== userId
+                    ? `${partnerName} already held their thumb. Yours is the one that lets this go, along with its whole streak history.`
+                    : `Making a promise takes one of you. Letting one go takes both. Hold your thumb to ask, then ${partnerName} holds theirs.`}
+                </Text>
+                <View style={{ marginTop: 6 }}>
+                  <FingerprintSeal
+                    onComplete={handleRetireHold}
+                    busy={busy === 'retire'}
+                    tone="light"
+                    accent="#C98A2B"
+                    size={148}
+                    idleLabel="press & hold for 5 seconds"
+                    busyLabel="letting it go…"
+                    releaseHint="all five seconds, so nobody quits by accident"
+                  />
+                </View>
+                <Pressable
+                  onPress={() => setRetireFor(null)}
+                  style={{ marginTop: 12, alignItems: 'center' }}
+                  hitSlop={6}
+                >
+                  <Text style={styles.retakeText}>never mind, we keep it ♡</Text>
+                </Pressable>
+              </>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
@@ -990,6 +1105,30 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   emojiPickActive: { borderColor: '#F2789F', backgroundColor: '#FDE8EF' },
+  emojiInput: { fontSize: 18, textAlign: 'center', color: palette.ink, paddingVertical: 0 },
+  emojiHint: { fontSize: 11, color: palette.inkFaint, marginTop: 6, fontStyle: 'italic' },
+  retireBanner: {
+    marginTop: 10,
+    backgroundColor: '#FFF6E8',
+    borderRadius: 14,
+    padding: 12,
+  },
+  retireText: { fontSize: 12.5, fontWeight: '700', color: '#A97B1D', lineHeight: 18 },
+  retireBtns: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  keepBtn: {
+    backgroundColor: '#F2789F',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  keepBtnText: { color: '#fff', fontWeight: '800', fontSize: 12.5 },
+  agreeBtn: {
+    backgroundColor: palette.line,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  agreeBtnText: { color: palette.inkSoft, fontWeight: '800', fontSize: 12.5 },
   fieldLabel: {
     fontSize: 11,
     fontWeight: '800',
@@ -1077,4 +1216,11 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   retakeText: { fontSize: 12.5, fontWeight: '800', color: palette.inkFaint },
+  retireBody: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: palette.inkSoft,
+    marginTop: 4,
+    marginBottom: 14,
+  },
 });

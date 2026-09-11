@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import {
   CanvasItem,
+  CycleEntry,
   Entry,
   GameState,
   HabitProofMeta,
@@ -965,6 +966,7 @@ function rowToHabit(r: any): PairHabit {
     emoji: String(r.emoji ?? '🌱'),
     // one canonical 'HH:MM' rule for the whole app (see habits.ts)
     remindAt: remindMinutes(remindAt) === null ? '' : remindAt,
+    retireRequestedBy: r.retire_requested_by ?? null,
     createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
   };
 }
@@ -1010,9 +1012,18 @@ export async function addHabit(
   if (error) throw new Error(error.message);
 }
 
-export async function deleteHabit(id: string): Promise<void> {
+// Ask to retire a promise with my fingerprint. 'requested' means the partner
+// still has to hold theirs; 'deleted' means both thumbs are in and it is gone.
+export async function retireHabit(id: string): Promise<'requested' | 'deleted' | 'gone'> {
   if (!supabase) throw new Error('Cloud is not configured.');
-  const { error } = await supabase.from('pair_habits').delete().eq('id', id);
+  const { data, error } = await supabase.rpc('habit_retire', { h_id: id });
+  if (error) throw new Error(error.message);
+  return data === 'deleted' || data === 'gone' ? data : 'requested';
+}
+
+export async function cancelRetireHabit(id: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.rpc('habit_retire_cancel', { h_id: id });
   if (error) throw new Error(error.message);
 }
 
@@ -1128,5 +1139,110 @@ export async function fetchPact(pairId: string): Promise<PairPact | null> {
 export async function signPact(): Promise<void> {
   if (!supabase) throw new Error('Cloud is not configured.');
   const { error } = await supabase.rpc('pact_sign');
+  if (error) throw new Error(error.message);
+}
+
+// ---------- cycle tracking ----------
+
+function rowToCycle(r: any): CycleEntry {
+  return {
+    id: String(r.id ?? ''),
+    pairId: String(r.pair_id ?? ''),
+    subject: String(r.subject ?? ''),
+    loggedBy: String(r.logged_by ?? ''),
+    startDay: String(r.start_day ?? ''),
+    endDay: r.end_day ? String(r.end_day) : null,
+    flow: ['spotting', 'light', 'medium', 'heavy'].includes(r.flow) ? r.flow : 'medium',
+    symptoms: Array.isArray(r.symptoms) ? r.symptoms.map((s: unknown) => String(s)) : [],
+    mood: String(r.mood ?? ''),
+    note: String(r.note ?? ''),
+    createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
+  };
+}
+
+export async function fetchCycles(pairId: string, limit = 60): Promise<CycleEntry[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('pair_cycles')
+    .select('*')
+    .eq('pair_id', pairId)
+    .order('start_day', { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+  return (data ?? []).map(rowToCycle);
+}
+
+export async function saveCycle(
+  pairId: string,
+  entry: {
+    id: string;
+    subject: string;
+    startDay: string;
+    endDay: string | null;
+    flow: string;
+    symptoms: string[];
+    mood: string;
+    note: string;
+  }
+): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.from('pair_cycles').insert({
+    id: entry.id,
+    pair_id: pairId,
+    subject: entry.subject,
+    start_day: entry.startDay,
+    end_day: entry.endDay,
+    flow: entry.flow,
+    symptoms: entry.symptoms,
+    mood: entry.mood,
+    note: entry.note,
+  });
+  if (error) {
+    if (error.code === '23505') throw new Error('That day is already logged ♡');
+    throw new Error(error.message);
+  }
+}
+
+// Either partner may correct an entry (close out a period, fix the details).
+export async function updateCycle(
+  id: string,
+  patch: {
+    endDay?: string | null;
+    flow?: string;
+    symptoms?: string[];
+    mood?: string;
+    note?: string;
+  }
+): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const row: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (patch.endDay !== undefined) row.end_day = patch.endDay;
+  if (patch.flow !== undefined) row.flow = patch.flow;
+  if (patch.symptoms !== undefined) row.symptoms = patch.symptoms;
+  if (patch.mood !== undefined) row.mood = patch.mood;
+  if (patch.note !== undefined) row.note = patch.note;
+  const { data, error } = await supabase
+    .from('pair_cycles')
+    .update(row)
+    .eq('id', id)
+    .select('id');
+  if (error) throw new Error(error.message);
+  if ((data ?? []).length === 0) throw new Error('That entry is no longer there.');
+}
+
+// Move the whole tracked history to the other person. One statement, so the
+// pair can never end up half-reassigned (which would read as two cycles).
+export async function reassignCycleSubject(pairId: string, subject: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase
+    .from('pair_cycles')
+    .update({ subject, updated_at: new Date().toISOString() })
+    .eq('pair_id', pairId);
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteCycle(id: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.from('pair_cycles').delete().eq('id', id);
   if (error) throw new Error(error.message);
 }
