@@ -48,12 +48,20 @@ import {
 } from './src/cloud';
 import { exportJournal } from './src/exporter';
 import {
+  fetchHabits,
   fetchLatestMoods,
   fetchMyPair,
   fetchPairGame,
+  fetchProofMeta,
   onPairEvent,
 } from './src/cloud';
-import { ensureStreakReminder, initNotifications, notifyPairEvent } from './src/notifications';
+import {
+  ensureStreakReminder,
+  initNotifications,
+  notifyPairEvent,
+  syncHabitReminders,
+} from './src/notifications';
+import { utcDayKey } from './src/gameScene';
 import HomeScreen from './src/screens/HomeScreen';
 import ComposeScreen from './src/screens/ComposeScreen';
 import EntryDetail from './src/screens/EntryDetail';
@@ -217,12 +225,8 @@ export default function App() {
         const partnerName =
           (pair.userA === scope ? pair.nameB : pair.nameA).trim() || 'your person';
         const myMoodRef = { current: undefined as string | undefined };
-        const [moods, pairGame] = await Promise.all([
-          fetchLatestMoods(pair.id, [scope]),
-          fetchPairGame(pair.id),
-        ]);
-        myMoodRef.current = moods[0]?.value;
-        await ensureStreakReminder(pairGame, true);
+        // subscribe first: a partner mood arriving during the fetches below
+        // must never be lost (the mood context just falls back gracefully)
         unsub = onPairEvent(pair.id, (e) => {
           if (e.author === scope) {
             if (e.kind === 'mood') myMoodRef.current = e.value;
@@ -232,6 +236,24 @@ export default function App() {
             notifyPairEvent(e, partnerName, myMoodRef.current).catch(() => {});
           }
         });
+        const [moods, pairGame] = await Promise.all([
+          fetchLatestMoods(pair.id, [scope]),
+          fetchPairGame(pair.id),
+        ]);
+        myMoodRef.current = moods[0]?.value;
+        await ensureStreakReminder(pairGame, true);
+        // Habit nudges stay honest even if the Us tab is never opened. Their
+        // failure domain is separate on purpose: a database that has not run
+        // the newest schema yet must not take the streak reminder down too.
+        try {
+          const [habits, todayProofs] = await Promise.all([
+            fetchHabits(pair.id),
+            fetchProofMeta(pair.id, utcDayKey()),
+          ]);
+          await syncHabitReminders(habits, todayProofs, scope, true);
+        } catch {
+          // offline or unmigrated; the Us screen will reschedule on next sync
+        }
       } catch {
         // offline or unpaired; nothing to schedule
       }

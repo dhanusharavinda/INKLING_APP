@@ -37,7 +37,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Inkling shows a photo of your choice as a ghost image so you can trace it on your shared doodle page."
+          "photosPermission": "Inkling shows a photo of your choice as a ghost image so you can trace it on your shared doodle page.",
+          "cameraPermission": "Inkling uses your camera so habit proof snaps are always real and taken in the moment."
         }
       ],
       [

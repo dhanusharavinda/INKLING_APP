@@ -3,16 +3,20 @@ import {
   CanvasItem,
   Entry,
   GameState,
-  HangmanState,
+  HabitProofMeta,
   LoveNote,
   PairAnswer,
   PairEvent,
   PairGameState,
+  PairHabit,
   PairInfo,
+  PairPact,
   PairSnap,
   RpsState,
   XoState,
 } from './types';
+import { remindMinutes } from './habits';
+import { utcDayKey } from './gameScene';
 
 // Turns raw fetch/DNS failures into something a human can act on.
 export function friendlyCloudError(e: unknown): string {
@@ -895,61 +899,6 @@ export async function deleteSnap(id: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
-// ---------- hangman ----------
-
-function rowToHangman(r: any): HangmanState {
-  const status = ['idle', 'playing', 'won', 'lost'].includes(r.status) ? r.status : 'idle';
-  return {
-    setter: r.setter ?? null,
-    word: String(r.word ?? ''),
-    guessed: String(r.guessed ?? ''),
-    wrongs: Number(r.wrongs) || 0,
-    status,
-    winsA: Number(r.wins_a) || 0,
-    winsB: Number(r.wins_b) || 0,
-    updatedAt: r.updated_at ? Date.parse(r.updated_at) : Date.now(),
-  };
-}
-
-export async function fetchHangman(pairId: string): Promise<HangmanState | null> {
-  if (!supabase) return null;
-  const { data, error } = await supabase
-    .from('pair_hangman')
-    .select('*')
-    .eq('pair_id', pairId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return data ? rowToHangman(data) : null;
-}
-
-export async function hangmanStart(secret: string): Promise<void> {
-  if (!supabase) throw new Error('Cloud is not configured.');
-  const { error } = await supabase.rpc('hangman_start', { secret });
-  if (error) throw new Error(error.message);
-}
-
-export async function hangmanGuess(letter: string): Promise<void> {
-  if (!supabase) throw new Error('Cloud is not configured.');
-  const { error } = await supabase.rpc('hangman_guess', { letter });
-  if (error) throw new Error(error.message);
-}
-
-export function onHangmanChange(pairId: string, cb: (h: HangmanState) => void): () => void {
-  if (!supabase) return () => {};
-  return subscribeWithRetry(() =>
-    supabase!
-      .channel(uniqueTopic(`pair-hangman-${pairId}`))
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'pair_hangman', filter: `pair_id=eq.${pairId}` },
-        (payload) => {
-          const r = payload.new as { updated_at?: string } | null;
-          if (r && r.updated_at) cb(rowToHangman(r));
-        }
-      )
-  );
-}
-
 // ---------- rock paper scissors ----------
 
 function rowToRps(r: any, iAmA: boolean): RpsState {
@@ -999,4 +948,185 @@ export function onRpsChange(pairId: string, iAmA: boolean, cb: (r: RpsState) => 
         }
       )
   );
+}
+
+// ---------- accountability: habits, proof snaps, the promise pact ----------
+// These tables are deliberately NOT on realtime (proof rows can carry big
+// photo payloads); the Us screen keeps them fresh through its quiet poll.
+
+function rowToHabit(r: any): PairHabit {
+  const remindAt = String(r.remind_at ?? '');
+  return {
+    id: String(r.id ?? ''),
+    pairId: String(r.pair_id ?? ''),
+    owner: String(r.owner ?? ''),
+    createdBy: String(r.created_by ?? ''),
+    title: String(r.title ?? ''),
+    emoji: String(r.emoji ?? '🌱'),
+    // one canonical 'HH:MM' rule for the whole app (see habits.ts)
+    remindAt: remindMinutes(remindAt) === null ? '' : remindAt,
+    createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
+  };
+}
+
+function rowToProofMeta(r: any): HabitProofMeta {
+  return {
+    id: String(r.id ?? ''),
+    habitId: String(r.habit_id ?? ''),
+    author: String(r.author ?? ''),
+    day: String(r.day ?? ''),
+    kind: r.kind === 'skip' ? 'skip' : 'photo',
+    caption: String(r.caption ?? ''),
+    skipReason: String(r.skip_reason ?? ''),
+    reaction: String(r.reaction ?? ''),
+    createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
+  };
+}
+
+export async function fetchHabits(pairId: string): Promise<PairHabit[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('pair_habits')
+    .select('*')
+    .eq('pair_id', pairId)
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map(rowToHabit);
+}
+
+export async function addHabit(
+  pairId: string,
+  habit: { id: string; owner: string; title: string; emoji: string; remindAt: string }
+): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.from('pair_habits').insert({
+    id: habit.id,
+    pair_id: pairId,
+    owner: habit.owner,
+    title: habit.title,
+    emoji: habit.emoji,
+    remind_at: habit.remindAt,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteHabit(id: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.from('pair_habits').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+// Everything BUT the photo column: light enough to fetch generously, and it
+// is all the streak math and calendars need. Pass a day to get just that day;
+// otherwise it returns a bounded one-year window (so streak displays cap out
+// around a year, and the payload stays small forever).
+const PROOF_META_COLS = 'id, habit_id, author, day, kind, caption, skip_reason, reaction, created_at';
+const PROOF_WINDOW_DAYS = 365;
+
+export async function fetchProofMeta(pairId: string, day?: string): Promise<HabitProofMeta[]> {
+  if (!supabase) return [];
+  let q = supabase
+    .from('habit_proofs')
+    .select(PROOF_META_COLS)
+    .eq('pair_id', pairId)
+    .order('day', { ascending: false })
+    .limit(1000);
+  if (day) q = q.eq('day', day);
+  else q = q.gte('day', utcDayKey(Date.now() - PROOF_WINDOW_DAYS * 86400000));
+  const { data, error } = await q;
+  if (error) throw new Error(error.message);
+  return (data ?? []).map(rowToProofMeta);
+}
+
+// The heavy part of one proof, loaded only when someone opens it.
+export async function fetchProofPhoto(proofId: string): Promise<string | null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from('habit_proofs')
+    .select('photo')
+    .eq('id', proofId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  const photo = data?.photo;
+  return typeof photo === 'string' &&
+    /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(photo)
+    ? photo
+    : null;
+}
+
+export async function logHabitProof(
+  pairId: string,
+  proof: {
+    id: string;
+    habitId: string;
+    day: string;
+    kind: 'photo' | 'skip';
+    photo: string | null;
+    caption: string;
+    skipReason: string;
+  }
+): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.from('habit_proofs').insert({
+    id: proof.id,
+    habit_id: proof.habitId,
+    pair_id: pairId,
+    day: proof.day,
+    kind: proof.kind,
+    photo: proof.photo,
+    caption: proof.caption,
+    skip_reason: proof.skipReason,
+  });
+  if (error) {
+    if (error.code === '23505') throw new Error('Today is already logged for this one ♡');
+    // RLS refuses inserts whose day is not the server's UTC today (this can
+    // happen right at the day boundary, or with a skewed device clock)
+    if (error.code === '42501')
+      throw new Error('The day just rolled over. Pull to refresh and log it again ♡');
+    throw new Error(error.message);
+  }
+}
+
+// Only today's own proof can be deleted (a retake); the database enforces it.
+// Selecting the deleted rows back exposes the silent zero-row case (e.g. the
+// day flipped while the viewer sat open), which would otherwise look like
+// success while the proof quietly stays.
+export async function deleteProof(id: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { data, error } = await supabase
+    .from('habit_proofs')
+    .delete()
+    .eq('id', id)
+    .select('id');
+  if (error) throw new Error(error.message);
+  if ((data ?? []).length === 0)
+    throw new Error('That proof is sealed now: only today’s can be redone.');
+}
+
+// React to the PARTNER's proof (the database refuses reactions to my own).
+export async function reactToProof(proofId: string, emoji: string): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.rpc('habit_react', { proof_id: proofId, emoji });
+  if (error) throw new Error(error.message);
+}
+
+export async function fetchPact(pairId: string): Promise<PairPact | null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from('pair_pact')
+    .select('*')
+    .eq('pair_id', pairId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) return null;
+  return {
+    signedA: data.signed_a ? Date.parse(data.signed_a) : null,
+    signedB: data.signed_b ? Date.parse(data.signed_b) : null,
+  };
+}
+
+export async function signPact(): Promise<void> {
+  if (!supabase) throw new Error('Cloud is not configured.');
+  const { error } = await supabase.rpc('pact_sign');
+  if (error) throw new Error(error.message);
 }

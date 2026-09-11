@@ -789,134 +789,12 @@ drop policy if exists snaps_delete on public.pair_snaps;
 create policy snaps_delete on public.pair_snaps
   for delete using (author = auth.uid());
 
--- ---------- hangman: guess my word (petals, not gallows) -------------------
--- One person plants a secret word; the other guesses letters. Six wrong
--- guesses and the flower loses all its petals.
-
-create table if not exists public.pair_hangman (
-  pair_id    uuid primary key references public.pairs (id) on delete cascade,
-  setter     uuid,
-  word       text not null default '',
-  guessed    text not null default '',
-  wrongs     integer not null default 0,
-  status     text not null default 'idle',  -- idle | playing | won | lost
-  wins_a     integer not null default 0,
-  wins_b     integer not null default 0,
-  updated_at timestamptz not null default now()
-);
-
-alter table public.pair_hangman enable row level security;
-drop policy if exists hangman_select on public.pair_hangman;
-create policy hangman_select on public.pair_hangman
-  for select using (
-    exists (
-      select 1 from public.pairs p
-      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
-    )
-  );
-
-create or replace function public.hangman_start(secret text)
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  pr public.pairs%rowtype;
-  w text := lower(trim(coalesce(secret, '')));
-begin
-  if w !~ '^[a-z]{3,12}$' then
-    raise exception 'Pick a single word, 3 to 12 letters.';
-  end if;
-  select * into pr from public.pairs
-    where user_a = auth.uid() or user_b = auth.uid()
-    limit 1;
-  if pr.id is null then
-    raise exception 'You are not linked with anyone yet.';
-  end if;
-  insert into public.pair_hangman (pair_id) values (pr.id)
-    on conflict (pair_id) do nothing;
-  update public.pair_hangman ph
-    set setter = auth.uid(), word = w, guessed = '', wrongs = 0,
-        status = 'playing', updated_at = now()
-    where ph.pair_id = pr.id and ph.status <> 'playing';
-  if not found then
-    raise exception 'A round is already in play.';
-  end if;
-end;
-$$;
-
-create or replace function public.hangman_guess(letter text)
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  pr public.pairs%rowtype;
-  h public.pair_hangman%rowtype;
-  ch text := lower(trim(coalesce(letter, '')));
-  i integer;
-  solved boolean := true;
-begin
-  if ch !~ '^[a-z]$' then
-    raise exception 'One letter at a time.';
-  end if;
-  select * into pr from public.pairs
-    where user_a = auth.uid() or user_b = auth.uid()
-    limit 1;
-  if pr.id is null then
-    raise exception 'You are not linked with anyone yet.';
-  end if;
-  select * into h from public.pair_hangman ph where ph.pair_id = pr.id for update;
-  if h.pair_id is null or h.status <> 'playing' then
-    raise exception 'No round in play. Plant a word first!';
-  end if;
-  if h.setter = auth.uid() then
-    raise exception 'You planted the word, they guess it ♡';
-  end if;
-  if position(ch in h.guessed) > 0 then
-    raise exception 'Already tried that letter.';
-  end if;
-
-  h.guessed := h.guessed || ch;
-  if position(ch in h.word) = 0 then
-    h.wrongs := h.wrongs + 1;
-  end if;
-
-  for i in 1..length(h.word) loop
-    if position(substr(h.word, i, 1) in h.guessed) = 0 then
-      solved := false;
-    end if;
-  end loop;
-
-  if solved then
-    h.status := 'won'; -- the guesser got it
-    if pr.user_a = auth.uid() then h.wins_a := h.wins_a + 1; else h.wins_b := h.wins_b + 1; end if;
-  elsif h.wrongs >= 6 then
-    h.status := 'lost'; -- the flower wilted; the setter scores
-    if h.setter = pr.user_a then h.wins_a := h.wins_a + 1; else h.wins_b := h.wins_b + 1; end if;
-  end if;
-
-  update public.pair_hangman ph
-    set guessed = h.guessed, wrongs = h.wrongs, status = h.status,
-        wins_a = h.wins_a, wins_b = h.wins_b, updated_at = now()
-    where ph.pair_id = pr.id;
-end;
-$$;
-
-revoke all on function public.hangman_start(text) from public;
-revoke all on function public.hangman_guess(text) from public;
-grant execute on function public.hangman_start(text) to authenticated;
-grant execute on function public.hangman_guess(text) to authenticated;
-
-do $$
-begin
-  alter publication supabase_realtime add table public.pair_hangman;
-exception
-  when duplicate_object then null;
-end;
-$$;
+-- ---------- hangman: removed ----------------------------------------------
+-- The hangman game was retired. Re-running this schema cleans up any older
+-- install (dropping the table also removes it from the realtime publication).
+drop function if exists public.hangman_start(text);
+drop function if exists public.hangman_guess(text);
+drop table if exists public.pair_hangman;
 
 -- ---------- rock paper scissors: pick in secret, reveal together -----------
 
@@ -1096,3 +974,251 @@ as $$
 $$;
 revoke all on function public.delete_user() from public;
 grant execute on function public.delete_user() to authenticated;
+
+-- ---------- accountability: promises kept with real camera snaps ----------
+-- Love should make you better, not sleepier. Each partner can add habits
+-- ("promises") for either of the two. The owner proves a habit each day with
+-- a photo taken in the app (camera only, never the gallery), or logs an
+-- honest skip with a reason. Photo days grow the streak, a skip pauses it,
+-- a silent miss breaks it (computed client-side from the proof rows).
+-- The pact table stores the fingerprint-sealed promise.
+
+create table if not exists public.pair_habits (
+  id         text primary key,
+  pair_id    uuid not null references public.pairs (id) on delete cascade,
+  owner      uuid not null references auth.users (id) on delete cascade,
+  created_by uuid not null default auth.uid(),
+  title      text not null,
+  emoji      text not null default '🌱',
+  remind_at  text not null default '',   -- 'HH:MM' on the owner's clock, '' = no reminder
+  created_at timestamptz not null default now()
+);
+create index if not exists pair_habits_pair_idx
+  on public.pair_habits (pair_id, created_at);
+
+create table if not exists public.habit_proofs (
+  id          text primary key,
+  habit_id    text not null references public.pair_habits (id) on delete cascade,
+  pair_id     uuid not null references public.pairs (id) on delete cascade,
+  author      uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  day         text not null,             -- YYYY-MM-DD (UTC), same clock as the tap game
+  kind        text not null,
+  photo       text,                      -- JPEG data URI straight from the camera
+  caption     text not null default '',
+  skip_reason text not null default '',
+  reaction    text not null default '',  -- the partner's emoji on this proof
+  created_at  timestamptz not null default now(),
+  unique (habit_id, day)
+);
+create index if not exists habit_proofs_pair_day_idx
+  on public.habit_proofs (pair_id, day desc);
+
+-- Named, re-runnable check constraints: every existing check is dropped and
+-- the canonical set re-added, so installs from any earlier shape of this
+-- table converge on re-run. Note there is NO "photo required for kind=photo"
+-- check here: it lives in the INSERT policy instead, because old rows have
+-- their photo deliberately stripped (see trim_old_proof_photos below) while
+-- the metadata keeps the streak.
+do $$
+declare
+  c record;
+begin
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.habit_proofs'::regclass and contype = 'c'
+  loop
+    execute format('alter table public.habit_proofs drop constraint %I', c.conname);
+  end loop;
+end;
+$$;
+alter table public.habit_proofs
+  add constraint habit_proofs_kind_check check (kind in ('photo', 'skip'));
+alter table public.habit_proofs
+  add constraint habit_proofs_skip_check check (kind <> 'skip' or length(trim(skip_reason)) > 0);
+-- the proof photo is part of the trust story, so its shape is enforced here
+-- too: a real image data URI, capped so no client can stuff the row
+alter table public.habit_proofs
+  add constraint habit_proofs_photo_check check (
+    photo is null
+    or (
+      length(photo) < 4200000
+      and (photo like 'data:image/jpeg;base64,%' or photo like 'data:image/png;base64,%')
+    )
+  );
+
+-- Photos are for accountability, not archaeology: the metadata (day, kind,
+-- caption, reason, reaction) keeps streaks and calendars forever, but the
+-- heavy photo payload is stripped once a proof is 30 days old, so the
+-- database stays small no matter how long the streaks run. Piggybacks on
+-- inserts, so no cron job is needed.
+create or replace function public.trim_old_proof_photos()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.habit_proofs hp
+    set photo = null
+    where hp.pair_id = new.pair_id
+      and hp.photo is not null
+      and hp.day < to_char((now() at time zone 'utc') - interval '30 days', 'YYYY-MM-DD');
+  return new;
+end;
+$$;
+drop trigger if exists habit_proofs_trim on public.habit_proofs;
+create trigger habit_proofs_trim
+  after insert on public.habit_proofs
+  for each row execute function public.trim_old_proof_photos();
+
+-- The "become better for love" pact: each person seals it once with a long
+-- fingerprint press in the app; the timestamps are the two signatures.
+create table if not exists public.pair_pact (
+  pair_id    uuid primary key references public.pairs (id) on delete cascade,
+  signed_a   timestamptz,
+  signed_b   timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.pair_habits  enable row level security;
+alter table public.habit_proofs enable row level security;
+alter table public.pair_pact    enable row level security;
+
+-- habits: both members see all of them; either member may add a habit for
+-- either of the two (that is the accountability deal), and either member may
+-- remove one. No updates: changing a promise means retiring it and making a
+-- new one, in the open.
+drop policy if exists habits_select on public.pair_habits;
+create policy habits_select on public.pair_habits
+  for select using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+drop policy if exists habits_insert on public.pair_habits;
+create policy habits_insert on public.pair_habits
+  for insert with check (
+    created_by = auth.uid()
+    and exists (
+      select 1 from public.pairs p
+      where p.id = pair_id
+        and (p.user_a = auth.uid() or p.user_b = auth.uid())
+        and (owner = p.user_a or owner = p.user_b)
+    )
+  );
+drop policy if exists habits_delete on public.pair_habits;
+create policy habits_delete on public.pair_habits
+  for delete using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+
+-- proofs: only the habit's owner logs them, only for TODAY (no backfilling a
+-- prettier past), one per habit per day. The author may delete today's proof
+-- (a retake); history is immutable for everyone. Reactions go through the
+-- habit_react function so nothing else can be touched.
+drop policy if exists proofs_select on public.habit_proofs;
+create policy proofs_select on public.habit_proofs
+  for select using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+drop policy if exists proofs_insert on public.habit_proofs;
+create policy proofs_insert on public.habit_proofs
+  for insert with check (
+    author = auth.uid()
+    and day = to_char(now() at time zone 'utc', 'YYYY-MM-DD')
+    and (kind <> 'photo' or photo is not null)
+    and exists (
+      select 1
+      from public.pair_habits h
+      join public.pairs p on p.id = h.pair_id
+      where h.id = habit_id
+        and h.pair_id = habit_proofs.pair_id
+        and h.owner = auth.uid()
+        and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+drop policy if exists proofs_delete on public.habit_proofs;
+create policy proofs_delete on public.habit_proofs
+  for delete using (
+    author = auth.uid()
+    and day = to_char(now() at time zone 'utc', 'YYYY-MM-DD')
+  );
+
+-- pact: members read it; signing only happens through pact_sign below.
+drop policy if exists pact_select on public.pair_pact;
+create policy pact_select on public.pair_pact
+  for select using (
+    exists (
+      select 1 from public.pairs p
+      where p.id = pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+    )
+  );
+
+-- React to the PARTNER's proof (mirrors note_react; reaction only).
+create or replace function public.habit_react(proof_id text, emoji text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.habit_proofs hp
+    set reaction = left(coalesce(emoji, ''), 8)
+    where hp.id = proof_id
+      and hp.author <> auth.uid()
+      and exists (
+        select 1 from public.pairs p
+        where p.id = hp.pair_id and (p.user_a = auth.uid() or p.user_b = auth.uid())
+      );
+end;
+$$;
+
+-- Sign the pact with my long fingerprint press. Signing is one-way: once a
+-- side is signed it stays signed.
+create or replace function public.pact_sign()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  pr public.pairs%rowtype;
+begin
+  select * into pr from public.pairs
+    where user_a = auth.uid() or user_b = auth.uid()
+    limit 1;
+  if pr.id is null then
+    raise exception 'You are not linked with anyone yet.';
+  end if;
+  if pr.user_b is null then
+    raise exception 'The pact needs both of you. Share your invite code first.';
+  end if;
+  insert into public.pair_pact (pair_id) values (pr.id)
+    on conflict (pair_id) do nothing;
+  if pr.user_a = auth.uid() then
+    update public.pair_pact
+      set signed_a = coalesce(signed_a, now()), updated_at = now()
+      where pair_id = pr.id;
+  else
+    update public.pair_pact
+      set signed_b = coalesce(signed_b, now()), updated_at = now()
+      where pair_id = pr.id;
+  end if;
+end;
+$$;
+
+revoke all on function public.habit_react(text, text) from public;
+revoke all on function public.pact_sign() from public;
+grant execute on function public.habit_react(text, text) to authenticated;
+grant execute on function public.pact_sign() to authenticated;
+
+-- No realtime publication for these tables on purpose: proof rows can carry
+-- megabyte photo payloads, which realtime would try to ship whole. The app
+-- keeps them fresh with its quiet poll instead.

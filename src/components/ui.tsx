@@ -1,6 +1,8 @@
 import React, { useRef } from 'react';
 import {
+  Alert,
   Animated,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -9,6 +11,18 @@ import {
   TextStyle,
 } from 'react-native';
 import { palette, radius, cardShadow, serif, shadeHex } from '../theme';
+
+// A yes/no confirm that works the same on native (Alert) and web (confirm).
+export function confirmAsk(title: string, message: string, onYes: () => void, yesLabel = 'Yes') {
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.confirm(`${title}\n\n${message}`)) onYes();
+    return;
+  }
+  Alert.alert(title, message, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: yesLabel, style: 'destructive', onPress: onYes },
+  ]);
+}
 
 // Duolingo-style chunky button: a colored cap sitting on a darker base that
 // compresses when pressed.

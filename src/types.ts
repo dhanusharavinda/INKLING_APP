@@ -179,16 +179,40 @@ export interface PairSnap {
   createdAt: number;
 }
 
-// Hangman: one plants a word, the other guesses; 6 wrongs wilts the flower.
-export interface HangmanState {
-  setter: string | null;
-  word: string; // hidden in the UI from the guesser while playing
-  guessed: string; // letters tried, in order
-  wrongs: number;
-  status: 'idle' | 'playing' | 'won' | 'lost';
-  winsA: number;
-  winsB: number;
-  updatedAt: number;
+// ---------- accountability: promises kept with real camera snaps ----------
+
+// A habit one person promised to keep; either partner may create or remove
+// habits for either of the two (that is the accountability deal).
+export interface PairHabit {
+  id: string;
+  pairId: string;
+  owner: string; // who does the habit and sends the proof
+  createdBy: string;
+  title: string;
+  emoji: string;
+  remindAt: string; // 'HH:MM' on the owner's clock, '' = no reminder
+  createdAt: number;
+}
+
+// One day's proof for a habit, without the heavy photo payload (that loads
+// lazily via fetchProofPhoto when a proof is actually opened).
+export interface HabitProofMeta {
+  id: string;
+  habitId: string;
+  author: string;
+  day: string; // YYYY-MM-DD (UTC)
+  kind: 'photo' | 'skip';
+  caption: string;
+  skipReason: string;
+  reaction: string; // the partner's emoji on this proof, '' if none
+  createdAt: number;
+}
+
+// The "become better for love" pact: when each side signed (fingerprint
+// press in the app), null while unsigned.
+export interface PairPact {
+  signedA: number | null;
+  signedB: number | null;
 }
 
 // Rock paper scissors: choose in secret, reveal together.

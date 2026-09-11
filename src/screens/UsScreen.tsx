@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   AppState,
   Image,
   Linking,
@@ -20,11 +19,13 @@ import * as ImagePicker from 'expo-image-picker';
 import {
   CanvasItem,
   CanvasText,
-  HangmanState,
+  HabitProofMeta,
   LoveNote,
   PairEvent,
   PairGameState,
+  PairHabit,
   PairInfo,
+  PairPact,
   PairSnap,
   RpsState,
   Stroke,
@@ -52,12 +53,11 @@ import {
   onGameChange,
   onLoveNotesChange,
   deleteSnap,
-  fetchHangman,
+  fetchHabits,
+  fetchPact,
+  fetchProofMeta,
   fetchRps,
   fetchSnaps,
-  hangmanGuess,
-  hangmanStart,
-  onHangmanChange,
   onPairEvent,
   onRpsChange,
   onXoChange,
@@ -95,7 +95,7 @@ import {
   unrescuableDays,
   utcDayKey,
 } from '../gameScene';
-import { ensureStreakReminder } from '../notifications';
+import { ensureStreakReminder, syncHabitReminders } from '../notifications';
 import {
   buildDoodleData,
   buildGameData,
@@ -106,7 +106,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import EmotionAvatar from '../components/EmotionAvatar';
 import DrawingCanvas, { TraceImage } from '../components/DrawingCanvas';
 import EmojiRain from '../components/EmojiRain';
-import { Button, Card, ProgressBar } from '../components/ui';
+import { Button, Card, confirmAsk, ProgressBar } from '../components/ui';
+import HabitsSection from './HabitsSection';
 
 interface Props {
   userId: string;
@@ -115,27 +116,15 @@ interface Props {
   cloudEnabled: boolean;
 }
 
-type SubTab = 'doodle' | 'together' | 'quest' | 'games' | 'mem';
-type GameTab = 'xo' | 'hang' | 'rps';
+type SubTab = 'doodle' | 'together' | 'habits' | 'quest' | 'games' | 'mem';
+type GameTab = 'xo' | 'rps';
 
-const ALPHABET = 'abcdefghijklmnopqrstuvwxyz'.split('');
 const RPS_META: { key: 'rock' | 'paper' | 'scissors'; emoji: string }[] = [
   { key: 'rock', emoji: '🪨' },
   { key: 'paper', emoji: '📄' },
   { key: 'scissors', emoji: '✂️' },
 ];
 const rpsEmoji = (k: string) => RPS_META.find((r) => r.key === k)?.emoji ?? '❔';
-
-function confirmAsk(title: string, message: string, onYes: () => void, yesLabel = 'Yes') {
-  if (Platform.OS === 'web') {
-    if (typeof window !== 'undefined' && window.confirm(`${title}\n\n${message}`)) onYes();
-    return;
-  }
-  Alert.alert(title, message, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: yesLabel, style: 'destructive', onPress: onYes },
-  ]);
-}
 
 export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props) {
   const [loading, setLoading] = useState(true);
@@ -147,8 +136,10 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   const [moods, setMoods] = useState<PairEvent[]>([]);
   const [game, setGame] = useState<PairGameState | null>(null);
   const [xo, setXo] = useState<XoState | null>(null);
-  const [hangman, setHangman] = useState<HangmanState | null>(null);
   const [rps, setRps] = useState<RpsState | null>(null);
+  const [habits, setHabits] = useState<PairHabit[]>([]);
+  const [proofMeta, setProofMeta] = useState<HabitProofMeta[]>([]);
+  const [pact, setPact] = useState<PairPact | null>(null);
   const [notes, setNotes] = useState<LoveNote[]>([]);
   const [lastReaction, setLastReaction] = useState<PairEvent | null>(null);
   const [lastLink, setLastLink] = useState<PairEvent | null>(null);
@@ -177,8 +168,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   const [snaps, setSnaps] = useState<PairSnap[]>([]);
   const [memDay, setMemDay] = useState<string | null>(null);
 
-  // hangman input
-  const [plantWord, setPlantWord] = useState('');
+  // rock paper scissors input guard
   const [gameBusy, setGameBusy] = useState(false);
 
   // emoji rain trigger
@@ -216,7 +206,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       if (p && p.userB) {
         const authorIds = [p.userA, p.userB].filter(Boolean) as string[];
         const amA = p.userA === userId;
-        const [cs, ms, g, x, ns, lr, ll, hm, rp] = await Promise.all([
+        const [cs, ms, g, x, ns, lr, ll, rp, hb, pm, pc] = await Promise.all([
           fetchCanvas(p.id),
           fetchLatestMoods(p.id, authorIds),
           fetchPairGame(p.id),
@@ -224,8 +214,10 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
           fetchLoveNotes(p.id),
           fetchLatestEvent(p.id, 'reaction'),
           fetchLatestEvent(p.id, 'link'),
-          fetchHangman(p.id),
           fetchRps(p.id, amA),
+          fetchHabits(p.id),
+          fetchProofMeta(p.id),
+          fetchPact(p.id),
         ]);
         setItems(cs);
         setMoods(ms);
@@ -234,8 +226,10 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         setNotes(ns);
         setLastReaction(lr);
         setLastLink(ll);
-        setHangman(hm);
         setRps(rp);
+        setHabits(hb);
+        setProofMeta(pm);
+        setPact(pc);
       } else {
         setItems([]);
         setMoods([]);
@@ -244,8 +238,10 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
         setNotes([]);
         setLastReaction(null);
         setLastLink(null);
-        setHangman(null);
         setRps(null);
+        setHabits([]);
+        setProofMeta([]);
+        setPact(null);
       }
     } catch (e) {
       setError(friendlyCloudError(e));
@@ -290,6 +286,11 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
   // it never overwrites optimistic local state mid-flight.
   const inFlightItems = useRef(0);
   const pollBusy = useRef(false);
+  // accountability data changes a few times a day, not a few times a minute:
+  // the poll only re-pulls it every 5th tick, and a poll that STARTED before
+  // the latest manual refresh landed may never overwrite it
+  const acctTick = useRef(0);
+  const acctStamp = useRef(0);
   useEffect(() => {
     if (!pair || !pair.userB) return;
     const authorIds = [pair.userA, pair.userB].filter(Boolean) as string[];
@@ -298,7 +299,10 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       if (pollBusy.current || AppState.currentState !== 'active') return;
       pollBusy.current = true;
       try {
-        const [cs, ms, g, x, ns, lr, ll, hm, rp, freshPair] = await Promise.all([
+        const todayK = utcDayKey();
+        const tickStart = Date.now();
+        const wantAcct = acctTick.current++ % 5 === 0;
+        const [cs, ms, g, x, ns, lr, ll, rp, freshPair, hb, tm, pc] = await Promise.all([
           fetchCanvas(pair.id),
           fetchLatestMoods(pair.id, authorIds),
           fetchPairGame(pair.id),
@@ -306,9 +310,11 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
           fetchLoveNotes(pair.id),
           fetchLatestEvent(pair.id, 'reaction'),
           fetchLatestEvent(pair.id, 'link'),
-          fetchHangman(pair.id),
           fetchRps(pair.id, pair.userA === userId),
           fetchMyPair(),
+          wantAcct ? fetchHabits(pair.id) : Promise.resolve(undefined),
+          wantAcct ? fetchProofMeta(pair.id, todayK) : Promise.resolve(undefined),
+          wantAcct ? fetchPact(pair.id) : Promise.resolve(undefined),
         ]);
         // unlink requests (and the unlink itself) land through here
         setPair((prev) => {
@@ -346,8 +352,27 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
           );
         }
         setXo((prev) => (prev && x && prev.updatedAt >= x.updatedAt ? prev : x));
-        setHangman((prev) => (prev && hm && prev.updatedAt >= hm.updatedAt ? prev : hm));
         setRps((prev) => (prev && rp && prev.updatedAt >= rp.updatedAt ? prev : rp));
+        // habits + today's proofs + pact ride the same quiet poll (these
+        // tables are not on realtime: proof rows can carry photo payloads)
+        if (hb !== undefined && tm !== undefined && pc !== undefined && acctStamp.current < tickStart) {
+          setHabits((prev) => {
+            const key = (list: PairHabit[]) =>
+              list.map((h) => `${h.id}:${h.title}:${h.emoji}:${h.remindAt}:${h.owner}`).join('|');
+            return key(prev) === key(hb) ? prev : hb;
+          });
+          setProofMeta((prev) => {
+            const merged = [...tm, ...prev.filter((p) => p.day !== todayK)];
+            const key = (list: HabitProofMeta[]) =>
+              list.map((p) => `${p.id}:${p.kind}:${p.reaction}`).sort().join('|');
+            return key(prev) === key(merged) ? prev : merged;
+          });
+          setPact((prev) =>
+            !!prev === !!pc && prev?.signedA === pc?.signedA && prev?.signedB === pc?.signedB
+              ? prev
+              : pc
+          );
+        }
         setNotes((prev) => {
           const key = (list: LoveNote[]) =>
             list.map((n) => `${n.id}:${n.reaction}`).join('|');
@@ -393,7 +418,6 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     });
     const offGame = onGameChange(pair.id, (g) => setGame(g));
     const offXo = onXoChange(pair.id, (x) => setXo(x));
-    const offHang = onHangmanChange(pair.id, (h) => setHangman(h));
     const offRps = onRpsChange(pair.id, pair.userA === userId, (r) => setRps(r));
     const offNotes = onLoveNotesChange(pair.id, () => {
       fetchLoveNotes(pair.id)
@@ -405,7 +429,6 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
       offEvents();
       offGame();
       offXo();
-      offHang();
       offRps();
       offNotes();
     };
@@ -458,8 +481,10 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     setGame(null);
     setXo(null);
     setNotes([]);
-    setHangman(null);
     setRps(null);
+    setHabits([]);
+    setProofMeta([]);
+    setPact(null);
   }, []);
 
   // Unlinking takes both hearts: the first ask only marks a request, and the
@@ -984,41 +1009,38 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
     return `day ${streakDays} together 🔥 the birds are proud of you`;
   }
 
-  // ---------- hangman ----------
+  // ---------- accountability: habits + proof snaps + the pact ----------
 
-  async function handlePlantWord() {
-    const w = plantWord.trim().toLowerCase();
-    if (!pair || gameBusy || !/^[a-z]{3,12}$/.test(w)) {
-      if (w) setError('One word, 3 to 12 letters, no spaces.');
-      return;
-    }
-    setGameBusy(true);
+  const refreshAccountability = useCallback(async () => {
+    if (!pair || !pair.userB) return;
     try {
-      await hangmanStart(w);
-      setPlantWord('');
-      const fresh = await fetchHangman(pair.id);
-      setHangman(fresh);
+      const [hb, pm, pc] = await Promise.all([
+        fetchHabits(pair.id),
+        fetchProofMeta(pair.id),
+        fetchPact(pair.id),
+      ]);
+      setHabits(hb);
+      setProofMeta(pm);
+      setPact(pc);
+      // a poll that started before this refresh may not overwrite it
+      acctStamp.current = Date.now();
     } catch (e) {
       setError(friendlyCloudError(e));
-    } finally {
-      setGameBusy(false);
     }
-  }
+  }, [pair]);
 
-  async function handleGuess(letter: string) {
-    if (!pair || gameBusy) return;
-    setGameBusy(true);
-    try {
-      await hangmanGuess(letter);
-      const fresh = await fetchHangman(pair.id);
-      setHangman(fresh);
-      if (fresh?.status === 'won') pour('🎉');
-    } catch (e) {
-      setError(friendlyCloudError(e));
-    } finally {
-      setGameBusy(false);
-    }
-  }
+  // opening the tab re-pulls the full proof history (the poll only carries
+  // today's), so streak strips are never stale
+  useEffect(() => {
+    if (subTab === 'habits') refreshAccountability();
+  }, [subTab, refreshAccountability]);
+
+  // keep the local nudges honest: a heads-up 30 min before each of MY habits,
+  // and a 9pm sweep while any of them still has no snap or skip
+  useEffect(() => {
+    if (loading) return;
+    syncHabitReminders(habits, proofMeta, userId, paired).catch(() => {});
+  }, [loading, habits, proofMeta, paired, userId]);
 
   // ---------- rock paper scissors ----------
 
@@ -1266,6 +1288,7 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                 [
                   { key: 'doodle', label: '🎨' },
                   { key: 'together', label: '🐦' },
+                  { key: 'habits', label: '💪' },
                   { key: 'quest', label: '💌' },
                   { key: 'games', label: '🎮' },
                   { key: 'mem', label: '📆' },
@@ -1402,6 +1425,21 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
               </Card>
             )}
 
+            {subTab === 'habits' && (
+              <HabitsSection
+                pair={pair}
+                userId={userId}
+                myName={myName}
+                partnerName={partnerName}
+                habits={habits}
+                proofMeta={proofMeta}
+                pact={pact}
+                onRefresh={refreshAccountability}
+                onError={setError}
+                pour={pour}
+              />
+            )}
+
             {subTab === 'quest' && (
               <Card style={{ marginTop: 10 }}>
                 <Text style={styles.questKicker}>daily dose of 💌</Text>
@@ -1488,7 +1526,6 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                 {(
                   [
                     { key: 'xo', label: '💗⭐ XO' },
-                    { key: 'hang', label: '🌸 hangman' },
                     { key: 'rps', label: '✂️ r·p·s' },
                   ] as { key: GameTab; label: string }[]
                 ).map((t) => (
@@ -1560,98 +1597,6 @@ export default function UsScreen({ userId, myName, apiKey, cloudEnabled }: Props
                       disabled={xoBusy}
                     />
                   </View>
-                )}
-              </Card>
-            )}
-
-            {subTab === 'games' && gameTab === 'hang' && (
-              <Card style={{ marginTop: 10, alignItems: 'center' }}>
-                <Text style={styles.xoScore}>
-                  you {iAmA ? hangman?.winsA ?? 0 : hangman?.winsB ?? 0} · {partnerName}{' '}
-                  {iAmA ? hangman?.winsB ?? 0 : hangman?.winsA ?? 0}
-                </Text>
-                {hangman?.status !== 'playing' ? (
-                  <>
-                    {(hangman?.status === 'won' || hangman?.status === 'lost') && (
-                      <Text style={[styles.phrase, { marginTop: 8 }]}>
-                        {hangman.status === 'won' ? 'guessed! 🎉' : 'the flower wilted 🍂'} the word
-                        was “{hangman.word}”
-                      </Text>
-                    )}
-                    <Text style={styles.gameHint}>
-                      plant a secret word and {partnerName} has 6 petals to guess it
-                    </Text>
-                    <View style={{ flexDirection: 'row', gap: 8, alignSelf: 'stretch', marginTop: 10 }}>
-                      <TextInput
-                        style={[styles.input, { flex: 1 }]}
-                        placeholder="a secret word…"
-                        placeholderTextColor={palette.inkFaint}
-                        value={plantWord}
-                        onChangeText={setPlantWord}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        maxLength={12}
-                        editable={!gameBusy}
-                      />
-                      <Button
-                        label="plant 🌱"
-                        onPress={handlePlantWord}
-                        color="#7FD1BE"
-                        textColor={palette.ink}
-                        disabled={gameBusy || plantWord.trim().length < 3}
-                      />
-                    </View>
-                  </>
-                ) : hangman.setter === userId ? (
-                  <>
-                    <Text style={{ fontSize: 26, marginTop: 8 }}>
-                      {'🌸'.repeat(Math.max(0, 6 - hangman.wrongs))}
-                      {'🍂'.repeat(Math.min(6, hangman.wrongs))}
-                    </Text>
-                    <Text style={styles.hangWord}>
-                      {hangman.word
-                        .split('')
-                        .map((c) => (hangman.guessed.includes(c) ? c : '·'))
-                        .join(' ')}
-                    </Text>
-                    <Text style={styles.gameHint}>
-                      your word is “{hangman.word}” · {partnerName} is guessing… tried:{' '}
-                      {hangman.guessed.split('').join(' ') || 'nothing yet'}
-                    </Text>
-                  </>
-                ) : (
-                  <>
-                    <Text style={{ fontSize: 26, marginTop: 8 }}>
-                      {'🌸'.repeat(Math.max(0, 6 - hangman.wrongs))}
-                      {'🍂'.repeat(Math.min(6, hangman.wrongs))}
-                    </Text>
-                    <Text style={styles.hangWord}>
-                      {hangman.word
-                        .split('')
-                        .map((c) => (hangman.guessed.includes(c) ? c : '_'))
-                        .join(' ')}
-                    </Text>
-                    <View style={styles.alphaGrid}>
-                      {ALPHABET.map((l) => {
-                        const used = hangman.guessed.includes(l);
-                        return (
-                          <Pressable
-                            key={l}
-                            onPress={() => handleGuess(l)}
-                            disabled={used || gameBusy}
-                            style={[styles.alphaKey, used && styles.alphaKeyUsed]}
-                          >
-                            <Text style={[styles.alphaKeyText, used && { color: palette.inkFaint }]}>
-                              {l}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                    <Text style={styles.gameHint}>
-                      guess {partnerName}'s word before the flower loses its 6 petals
-                    </Text>
-                  </>
                 )}
               </Card>
             )}
@@ -2249,33 +2194,6 @@ const styles = StyleSheet.create({
   },
   gameSwitchBtnActive: { backgroundColor: '#FDE8EF' },
   gameSwitchText: { fontSize: 12, fontWeight: '800', color: palette.inkSoft },
-  hangWord: {
-    fontFamily: serif,
-    fontSize: 26,
-    fontWeight: '700',
-    letterSpacing: 4,
-    color: palette.ink,
-    marginTop: 10,
-  },
-  alphaGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    justifyContent: 'center',
-    marginTop: 12,
-  },
-  alphaKey: {
-    width: 32,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: palette.bg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: '#F6DCE5',
-  },
-  alphaKeyUsed: { backgroundColor: palette.line, borderColor: 'transparent' },
-  alphaKeyText: { fontSize: 15, fontWeight: '800', color: palette.ink },
   rpsRow: { flexDirection: 'row', gap: 14, marginTop: 14 },
   rpsBtn: {
     width: 74,
